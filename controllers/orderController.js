@@ -1,17 +1,38 @@
 const Order = require('../models/Order');
 const Customer = require('../models/Customer');
-const fs = require('fs');
 const path = require('path');
 const generateOrderNumber = require('../utils/generateOrderNumber');
 const generatePINumber = require('../utils/generatePINumber');
 const { syncBuyerCatalogue } = require('../utils/syncBuyerCatalogue');
 const { AppError } = require('../middleware/errorHandler');
 const {
+  uploadToGitHub,
+  uploadMultipleToGitHub,
+  deleteFromGitHub,
+  isGitHubUrl,
+} = require('../utils/githubStorage');
+const {
   successResponse,
   createdResponse,
   paginatedResponse,
   buildPagination,
 } = require('../utils/apiResponse');
+
+// ─── Helper: generate a unique filename from a multer memory file ───────────
+const uniqueName = (prefix, originalname) => {
+  const ext = path.extname(originalname);
+  const stamp = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+  return `${prefix}-${stamp}${ext}`;
+};
+
+// ─── Helper: Upload multer memory files to GitHub ───────────────────────────
+const uploadFilesToGitHub = async (files, prefix, folder) => {
+  const items = files.map((f) => ({
+    buffer: f.buffer,
+    filename: uniqueName(prefix, f.originalname),
+  }));
+  return uploadMultipleToGitHub(items, folder);
+};
 
 // ─── @GET /api/v1/orders ─────────────────────────────────────────────────────
 exports.getOrders = async (req, res, next) => {
@@ -100,171 +121,6 @@ exports.getOrder = async (req, res, next) => {
   successResponse(res, { order });
 };
 
-// Internal Helper: Auto-rename media to [Buyer SKU]-pro/bar/cmt-XX
-//
-// Rules:
-// 1. Files already matching the expected prefix are NEVER touched
-//    (preserves any manual renames the user has done).
-// 2. New uploads get the lowest unused number for that prefix
-//    (so deleting #03 then uploading reuses slot 03, never collides).
-// 3. If the target filename somehow already exists on disk, we fall
-//    back to appending -1, -2, ... to guarantee on-disk uniqueness.
-const autoRenameMedia = async (order) => {
-  let updated = false;
-
-  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-  // Find the lowest unused 2-digit slot for a given prefix among existing paths
-  const nextAvailableNum = (paths, prefix) => {
-    const used = new Set();
-    const re = new RegExp(`${escapeRe(prefix)}(\\d+)`);
-    paths.forEach((p) => {
-      if (!p) return;
-      const m = p.match(re);
-      if (m) used.add(parseInt(m[1], 10));
-    });
-    let n = 1;
-    while (used.has(n)) n++;
-    return n;
-  };
-
-  // Physically rename oldPath -> <dir>/<baseName><ext>, ensuring on-disk
-  // uniqueness by appending -1, -2, ... if needed. Returns the new
-  // relative path (with forward slashes) or null if the source is missing.
-  const renameFile = (oldPath, baseName) => {
-    const ext = path.extname(oldPath);
-    const dir = path.dirname(oldPath);
-    let candidate = baseName;
-    let candidateRel = path.join(dir, `${candidate}${ext}`).replace(/\\/g, '/');
-    let absNew = path.join(__dirname, '..', candidateRel);
-    let suffix = 1;
-    while (fs.existsSync(absNew)) {
-      candidate = `${baseName}-${suffix}`;
-      candidateRel = path.join(dir, `${candidate}${ext}`).replace(/\\/g, '/');
-      absNew = path.join(__dirname, '..', candidateRel);
-      suffix++;
-    }
-    const absOld = path.join(__dirname, '..', oldPath);
-    if (!fs.existsSync(absOld)) return null;
-    fs.renameSync(absOld, absNew);
-    return candidateRel;
-  };
-
-  const items = order.items;
-
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const sku = item.buyerSKU || item.companySKU || `Item-${i + 1}`;
-
-    // 1. Item images ───────────────────────────────────────────────────
-    if (item.images?.length > 0) {
-      const proPrefix = `${sku}_`;
-      for (let j = 0; j < item.images.length; j++) {
-        const oldPath = item.images[j];
-        if (!oldPath || oldPath.startsWith('http')) continue;
-        if (oldPath.includes(proPrefix)) continue; // already named — leave it alone
-
-        const num = String(nextAvailableNum(item.images, proPrefix)).padStart(2, '0');
-        const newPath = renameFile(oldPath, `${sku}_${num}`);
-        if (newPath) {
-          // Sync primaryImage reference if it points to this file
-          const dbOld = oldPath.startsWith('/') ? oldPath : `/${oldPath}`;
-          const dbNew = newPath.startsWith('/') ? newPath : `/${newPath}`;
-          if (
-            item.primaryImage === dbOld ||
-            item.primaryImage === oldPath ||
-            item.primaryImage === dbNew.substring(1)
-          ) {
-            item.primaryImage = dbNew;
-          }
-          item.images[j] = newPath;
-          updated = true;
-        }
-      }
-    }
-
-    // 2. Barcode (bar) ─────────────────────────────────────────────────
-    // Barcodes are unique per item; pick the next free slot across all
-    // items so two items sharing a SKU never collide.
-    if (item.barcode?.image) {
-      const oldPath = item.barcode.image;
-      const barPrefix = `${sku}-bar-`;
-      if (!oldPath.startsWith('http') && !oldPath.includes(barPrefix)) {
-        const allBarcodes = items.map((it) => it.barcode?.image).filter(Boolean);
-        const num = String(nextAvailableNum(allBarcodes, barPrefix)).padStart(2, '0');
-        const newPath = renameFile(oldPath, `${sku}-bar-${num}`);
-        if (newPath) {
-          item.barcode.image = newPath;
-          updated = true;
-        }
-      }
-    }
-
-    // 3. Item comment images (cmt) ─────────────────────────────────────
-    if (item.comments?.length > 0) {
-      const cmtPrefix = `${sku}-cmt-`;
-      item.comments.forEach((comment) => {
-        if (!comment.images?.length) return;
-        for (let k = 0; k < comment.images.length; k++) {
-          const oldPath = comment.images[k];
-          if (!oldPath || oldPath.startsWith('http')) continue;
-          if (oldPath.includes(cmtPrefix)) continue;
-
-          // Pool of all cmt paths across all comments of this item
-          const allCmtPaths = item.comments.flatMap((c) => c.images || []);
-          const num = String(nextAvailableNum(allCmtPaths, cmtPrefix)).padStart(2, '0');
-          const newPath = renameFile(oldPath, `${sku}-cmt-${num}`);
-          if (newPath) {
-            comment.images[k] = newPath;
-            updated = true;
-          }
-        }
-      });
-    }
-  }
-
-  // 4. Order-level photos (photo) ───────────────────────────────────────
-  const fileNum = order.fileNumber || 'Order';
-  if (order.orderImages?.length > 0) {
-    const photoPrefix = `${fileNum}-photo-`;
-    for (let i = 0; i < order.orderImages.length; i++) {
-      const oldPath = order.orderImages[i];
-      if (!oldPath || oldPath.startsWith('http')) continue;
-      if (oldPath.includes(photoPrefix)) continue;
-
-      const num = String(nextAvailableNum(order.orderImages, photoPrefix)).padStart(2, '0');
-      const newPath = renameFile(oldPath, `${fileNum}-photo-${num}`);
-      if (newPath) {
-        order.orderImages[i] = newPath;
-        updated = true;
-      }
-    }
-  }
-
-  // 5. Order-level comment images (cmt) ─────────────────────────────────
-  if (order.comments?.length > 0) {
-    const ordCmtPrefix = `${fileNum}-cmt-`;
-    order.comments.forEach((comment) => {
-      if (!comment.images?.length) return;
-      for (let i = 0; i < comment.images.length; i++) {
-        const oldPath = comment.images[i];
-        if (!oldPath || oldPath.startsWith('http')) continue;
-        if (oldPath.includes(ordCmtPrefix)) continue;
-
-        const allCmtPaths = order.comments.flatMap((c) => c.images || []);
-        const num = String(nextAvailableNum(allCmtPaths, ordCmtPrefix)).padStart(2, '0');
-        const newPath = renameFile(oldPath, `${fileNum}-cmt-${num}`);
-        if (newPath) {
-          comment.images[i] = newPath;
-          updated = true;
-        }
-      }
-    });
-  }
-
-  return updated;
-};
-
 // ─── @POST /api/v1/orders ────────────────────────────────────────────────────
 exports.createOrder = async (req, res, next) => {
   const { fileNumber, customer: customerId, ...orderData } = req.body;
@@ -307,8 +163,6 @@ exports.createOrder = async (req, res, next) => {
     lastModifiedBy: req.user._id,
   });
 
-  // Auto-rename uploaded media
-  await autoRenameMedia(order);
   await order.save();
 
   const populated = await Order.findById(order._id)
@@ -350,14 +204,9 @@ exports.updateOrder = async (req, res, next) => {
   Object.assign(order, req.body, { lastModifiedBy: req.user._id });
   delete order._doc?.changeNote;
 
-  // Auto-rename uploaded media
-  await autoRenameMedia(order);
   await order.save();
 
-  // Sync products to Buyer Catalogue for any non-Draft order. Draft orders
-  // haven't been finalized yet, so they have no catalogue entry to refresh.
-  // For finalized orders this is what propagates price / image / dimension
-  // edits into the BuyerCatalogue.
+  // Sync products to Buyer Catalogue for any non-Draft order.
   if (order.orderStatus !== 'Draft') {
     try {
       await syncBuyerCatalogue(order, req.user);
@@ -464,9 +313,7 @@ exports.updateOrderStatus = async (req, res, next) => {
     throw new AppError('Cannot change status of a completed order.', 400);
   }
 
-  // Forward-only enforcement: Employees can advance through the pipeline but
-  // never rewind. Admins can freely move in either direction to correct
-  // mistakes, per spec.
+  // Forward-only enforcement
   const STATUS_ORDER = [
     'Draft', 'Finalized', 'Pending', 'In Production', 'QC',
     'Polish', 'Packaging', 'Ready to Ship', 'Shipped', 'Completed',
@@ -517,7 +364,12 @@ exports.cancelOrder = async (req, res, next) => {
 // ─── @POST /api/v1/orders/:id/comments ──────────────────────────────────────
 exports.addComment = async (req, res, next) => {
   const { text } = req.body;
-  const images = req.files ? req.files.map((f) => `/uploads/documents/${f.filename}`) : [];
+
+  // Upload comment images to GitHub
+  let images = [];
+  if (req.files && req.files.length > 0) {
+    images = await uploadFilesToGitHub(req.files, 'doc', 'documents');
+  }
 
   if (!text && images.length === 0) {
     throw new AppError('Comment must have text or images', 400);
@@ -534,8 +386,6 @@ exports.addComment = async (req, res, next) => {
   });
   order.lastModifiedBy = req.user._id;
 
-  // Auto-rename uploaded media
-  await autoRenameMedia(order);
   await order.save();
 
   successResponse(res, { comments: order.comments }, 'Comment added');
@@ -547,8 +397,8 @@ exports.uploadMedia = async (req, res, next) => {
     throw new AppError('No files uploaded', 400);
   }
 
-  // The route uses uploadImage middleware which saves to /uploads/images
-  const urls = req.files.map((f) => `/uploads/images/${f.filename}`);
+  // Upload to GitHub images folder
+  const urls = await uploadFilesToGitHub(req.files, 'img', 'images');
 
   successResponse(res, { urls }, 'Media uploaded');
 };
@@ -562,12 +412,11 @@ exports.uploadOrderImages = async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) throw new AppError('Order not found', 404);
 
-  const paths = req.files.map((f) => `/uploads/documents/${f.filename}`);
-  order.orderImages.push(...paths);
+  // Upload to GitHub documents folder
+  const urls = await uploadFilesToGitHub(req.files, 'doc', 'documents');
+  order.orderImages.push(...urls);
   order.lastModifiedBy = req.user._id;
 
-  // Auto-rename uploaded media
-  await autoRenameMedia(order);
   await order.save();
 
   successResponse(res, { orderImages: order.orderImages }, 'Images uploaded');
@@ -580,9 +429,13 @@ exports.uploadAttachment = async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) throw new AppError('Order not found', 404);
 
+  // Upload single file to GitHub
+  const filename = uniqueName('doc', req.file.originalname);
+  const fileUrl = await uploadToGitHub(req.file.buffer, filename, 'documents');
+
   const attachment = {
     fileName: req.file.originalname,
-    filePath: `/uploads/documents/${req.file.filename}`,
+    filePath: fileUrl,
     fileType: req.file.mimetype,
     uploadedAt: new Date(),
   };
@@ -700,17 +553,10 @@ exports.deleteOrderMedia = async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) throw new AppError('Order not found', 404);
 
-  // 1. Prepare for physical deletion
-  const relPath = filePath.startsWith('/') ? filePath.substring(1) : filePath;
-  const dbPath = filePath.startsWith('/') ? filePath : `/${filePath}`;
-  const dbPathAlt = filePath.startsWith('/') ? filePath.substring(1) : filePath;
-
-  const absolutePath = path.join(__dirname, '..', relPath);
-
   try {
-    // 2. Clear references in DB
+    // Clear references in DB
     let updated = false;
-    const isMatch = (p) => p === dbPath || p === dbPathAlt;
+    const isMatch = (p) => p === filePath;
 
     // Order images
     if (order.orderImages.some(isMatch)) {
@@ -754,7 +600,7 @@ exports.deleteOrderMedia = async (req, res, next) => {
     if (updated) {
       await order.save();
 
-      // Propagate item-image deletions to the BuyerCatalogue.
+      // Propagate item-image deletions to the BuyerCatalogue
       if (order.orderStatus !== 'Draft') {
         try {
           await syncBuyerCatalogue(order, req.user);
@@ -764,11 +610,11 @@ exports.deleteOrderMedia = async (req, res, next) => {
       }
     }
 
-    // 3. Physical deletion
-    if (fs.existsSync(absolutePath)) {
-      fs.unlinkSync(absolutePath);
-    } else if (fs.existsSync(path.join(__dirname, '..', filePath))) {
-      fs.unlinkSync(path.join(__dirname, '..', filePath));
+    // Delete from GitHub (non-blocking — DB is already cleaned up)
+    if (isGitHubUrl(filePath)) {
+      deleteFromGitHub(filePath).catch((err) =>
+        console.error('GitHub delete error:', err.message)
+      );
     }
 
     successResponse(res, null, 'Media deleted successfully');
@@ -782,7 +628,7 @@ exports.deleteOrder = async (req, res, next) => {
   const order = await Order.findById(req.params.id);
   if (!order) throw new AppError('Order not found', 404);
 
-  // 1. Collect all file paths
+  // 1. Collect all file paths/URLs
   const filePaths = new Set();
 
   if (order.orderImages) order.orderImages.forEach(p => filePaths.add(p));
@@ -798,25 +644,17 @@ exports.deleteOrder = async (req, res, next) => {
   });
   order.attachments.forEach(att => filePaths.add(att.filePath));
 
-  // 2. Delete files from disk
-  filePaths.forEach(filePath => {
-    if (filePath && !filePath.startsWith('http')) {
-      const relPath = filePath.startsWith('/') ? filePath.substring(1) : filePath;
-      const absolutePath = path.join(__dirname, '..', relPath);
-      try {
-        if (fs.existsSync(absolutePath)) {
-          fs.unlinkSync(absolutePath);
-        }
-      } catch (err) {
-        console.error(`Failed to delete file ${absolutePath}:`, err);
-      }
+  // 2. Delete files from GitHub (non-blocking)
+  filePaths.forEach(fileUrl => {
+    if (fileUrl && isGitHubUrl(fileUrl)) {
+      deleteFromGitHub(fileUrl).catch((err) =>
+        console.error(`GitHub delete error for ${fileUrl}:`, err.message)
+      );
     }
   });
 
   // 3. Delete order from DB
   await Order.findByIdAndDelete(req.params.id);
-
-  // 4. Log activity
 
   successResponse(res, null, 'Order and associated media deleted successfully');
 };
@@ -830,12 +668,11 @@ exports.setPrimaryImage = async (req, res, next) => {
   const item = order.items.id(req.params.itemId);
   if (!item) throw new AppError('Item not found', 404);
 
-  // Normalize imagePath to include leading slash
-  item.primaryImage = imagePath.startsWith('/') ? imagePath : `/${imagePath}`;
+  // Store the path as-is (GitHub URLs are already absolute)
+  item.primaryImage = imagePath;
   await order.save();
 
-  // Propagate the primary-image change to the BuyerCatalogue so the
-  // catalogue's product photo stays in sync.
+  // Propagate the primary-image change to the BuyerCatalogue
   if (order.orderStatus !== 'Draft') {
     try {
       await syncBuyerCatalogue(order, req.user);

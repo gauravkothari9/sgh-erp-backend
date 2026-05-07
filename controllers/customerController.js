@@ -1,7 +1,9 @@
 const Customer = require('../models/Customer');
 const Order = require('../models/Order');
+const path = require('path');
 const generateFileNumber = require('../utils/generateFileNumber');
 const { AppError } = require('../middleware/errorHandler');
+const { uploadToGitHub } = require('../utils/githubStorage');
 const {
   successResponse,
   createdResponse,
@@ -226,9 +228,11 @@ exports.uploadPhoto = async (req, res, next) => {
   const customer = await Customer.findById(req.params.id);
   if (!customer) throw new AppError('Customer not found', 404);
 
-  // File path mapping (e.g. /uploads/customers/customer-12345.jpg)
-  const photoUrl = `/uploads/customers/${req.file.filename}`;
-  
+  // Upload to GitHub and get the raw URL
+  const ext = path.extname(req.file.originalname);
+  const filename = `customer-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+  const photoUrl = await uploadToGitHub(req.file.buffer, filename, 'customers');
+
   customer.photo = photoUrl;
   customer.lastModifiedBy = req.user._id;
   await customer.save();

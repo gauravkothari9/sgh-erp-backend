@@ -2,41 +2,9 @@ const multer = require('multer');
 const path = require('path');
 const { AppError } = require('./errorHandler');
 
-// ─── Storage: Documents (order attachments) ──────────────────────────────────
-const documentStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, '../uploads/documents'));
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    const ext = path.extname(file.originalname);
-    cb(null, `doc-${uniqueSuffix}${ext}`);
-  },
-});
-
-// ─── Storage: Item images ────────────────────────────────────────────────────
-const imageStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, '../uploads/images'));
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    const ext = path.extname(file.originalname);
-    cb(null, `img-${uniqueSuffix}${ext}`);
-  },
-});
-
-// ─── Storage: Customer photos ────────────────────────────────────────────────
-const customerPhotoStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, '../uploads/customers'));
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    const ext = path.extname(file.originalname);
-    cb(null, `customer-${uniqueSuffix}${ext}`);
-  },
-});
+// ─── Storage: Memory (files stay in RAM as Buffers) ─────────────────────────
+// Vercel serverless has ephemeral disk — we upload buffers to GitHub instead.
+const memoryStorage = multer.memoryStorage();
 
 // ─── File filters ─────────────────────────────────────────────────────────────
 const documentFilter = (req, file, cb) => {
@@ -72,9 +40,9 @@ const imageFilter = (req, file, cb) => {
   }
 };
 
-// ─── Multer instances ─────────────────────────────────────────────────────────
+// ─── Multer instances (all use memory storage now) ────────────────────────────
 const uploadDocument = multer({
-  storage: documentStorage,
+  storage: memoryStorage,
   fileFilter: documentFilter,
   limits: {
     fileSize: parseInt(process.env.MAX_FILE_SIZE) || 10 * 1024 * 1024, // 10MB
@@ -82,7 +50,7 @@ const uploadDocument = multer({
 });
 
 const uploadImage = multer({
-  storage: imageStorage,
+  storage: memoryStorage,
   fileFilter: imageFilter,
   limits: {
     fileSize: 50 * 1024 * 1024, // 50MB per image
@@ -90,7 +58,7 @@ const uploadImage = multer({
 });
 
 const uploadCustomerPhoto = multer({
-  storage: customerPhotoStorage,
+  storage: memoryStorage,
   fileFilter: imageFilter,
   limits: {
     fileSize: 50 * 1024 * 1024, // 50MB per image

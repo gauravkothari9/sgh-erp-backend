@@ -17,10 +17,18 @@ const customerRoutes = require('./routes/customerRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const buyerCatalogueRoutes = require('./routes/buyerCatalogueRoutes');
 
-// Connect to MongoDB (cached across serverless invocations)
-connectDB().catch((err) => console.error('Initial DB connect error:', err.message));
-
 const app = express();
+
+// ─── Ensure DB connection before handling any request (serverless fix) ───────
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+  } catch (err) {
+    console.error('MongoDB Connection Failed:', err.message);
+    return res.status(503).json({ success: false, message: 'Database unavailable' });
+  }
+  next();
+});
 
 // ─── Security Middleware ────────────────────────────────────────────────────
 app.use(helmet({
