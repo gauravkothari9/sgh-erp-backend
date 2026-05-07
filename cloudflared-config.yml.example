@@ -1,0 +1,24 @@
+# =====================================================================
+# Cloudflare Tunnel config for SGH ERP backend
+# Copy this to:  %USERPROFILE%\.cloudflared\config.yml
+# Then replace the two <PLACEHOLDERS> below.
+# =====================================================================
+
+# Tunnel UUID from `cloudflared tunnel create sgh-erp`
+tunnel: 3fd3a446-8dae-409c-a5e3-28a48971773d
+
+# Credentials file written by the create command
+credentials-file: C:\Users\ritik\.cloudflared\3fd3a446-8dae-409c-a5e3-28a48971773d.json
+
+# Logging — handy when debugging the service
+loglevel: info
+
+# Routing rules — first match wins.
+# Public hostname  ──►  the local service it forwards to.
+ingress:
+  # The Node/Express backend on this PC
+  - hostname: api.sghsofterp.com
+    service: http://localhost:5000
+
+  # Required catch-all. Returns 404 for any host not listed above.
+  - service: http_status:404
