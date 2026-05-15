@@ -10,7 +10,7 @@ const {
   uploadMultipleToGitHub,
   deleteFromGitHub,
   isGitHubUrl,
-} = require('../utils/githubStorage');
+} = require('../utils/localStorage');
 const {
   successResponse,
   createdResponse,

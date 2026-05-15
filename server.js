@@ -1,4 +1,9 @@
-require('dotenv').config();
+// Load env vars from .env.development when NODE_ENV=development, else .env.
+// PM2 boots with NODE_ENV=production (set in ecosystem.config.js) → reads .env.
+// `npm run dev` sets NODE_ENV=development → reads .env.development.
+const path = require('path');
+const envSuffix = process.env.NODE_ENV === 'development' ? '.development' : '';
+require('dotenv').config({ path: path.join(__dirname, `.env${envSuffix}`) });
 require('express-async-errors');
 
 const express = require('express');
@@ -6,7 +11,6 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
-const path = require('path');
 
 const connectDB = require('./config/db');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
@@ -18,6 +22,11 @@ const orderRoutes = require('./routes/orderRoutes');
 const buyerCatalogueRoutes = require('./routes/buyerCatalogueRoutes');
 
 const app = express();
+
+// ─── Trust proxy ────────────────────────────────────────────────────────────
+// Behind Cloudflare Tunnel, the real client IP arrives in X-Forwarded-For.
+// Trust 1 hop (the tunnel) so express-rate-limit can identify users correctly.
+app.set('trust proxy', 1);
 
 // ─── Ensure DB connection before handling any request (serverless fix) ───────
 app.use(async (req, res, next) => {
@@ -61,7 +70,10 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 // ─── Static Files (Uploads) ─────────────────────────────────────────────────
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Resolve UPLOAD_PATH relative to backend/ so dev (./uploads-dev) and prod
+// (./uploads) serve from the right folder.
+const uploadDir = path.resolve(__dirname, process.env.UPLOAD_PATH || './uploads');
+app.use('/uploads', express.static(uploadDir));
 
 // ─── Health check & Root ────────────────────────────────────────────────────
 app.get('/', (req, res) => {

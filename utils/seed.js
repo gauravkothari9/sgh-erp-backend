@@ -3,7 +3,8 @@
  * Run with: node utils/seed.js  (or `node backend/utils/seed.js` from repo root)
  */
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+const envSuffix = process.env.NODE_ENV === 'development' ? '.development' : '';
+require('dotenv').config({ path: path.join(__dirname, '..', `.env${envSuffix}`) });
 const mongoose = require('mongoose');
 const User = require('../models/User');
 
