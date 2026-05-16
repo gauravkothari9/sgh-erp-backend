@@ -172,9 +172,48 @@ const isGitHubUrl = (url) => {
   );
 };
 
+/**
+ * Rename an existing GitHub-hosted file. Copies the file to a new path
+ * (filename within the same folder), then deletes the original. Returns
+ * the new public URL. If the source file can't be fetched, returns null
+ * so callers can fall back to the original URL.
+ *
+ * @param {string} oldUrl       – Existing raw URL of the file
+ * @param {string} newFilename  – Target filename (e.g. "NEW-SKU_Pro-1.jpg")
+ * @param {string} folder       – Subfolder in the repo (default: "images")
+ * @returns {Promise<string|null>}
+ */
+const renameOnGitHub = async (oldUrl, newFilename, folder = 'images') => {
+  if (!oldUrl || !newFilename) return null;
+  try {
+    // Fetch the original bytes so we can re-upload under the new name.
+    const res = await fetch(oldUrl);
+    if (!res.ok) return null;
+    const arrayBuffer = await res.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const newUrl = await uploadToGitHub(buffer, newFilename, folder);
+
+    // Best-effort delete of the original. If it fails (file already gone,
+    // network blip), the rename still "succeeds" — the new URL is live and
+    // the old will just orphan in the bucket.
+    try {
+      await deleteFromGitHub(oldUrl);
+    } catch (err) {
+      console.warn(`renameOnGitHub: cleanup of ${oldUrl} failed`, err?.message || err);
+    }
+
+    return newUrl;
+  } catch (err) {
+    console.error('renameOnGitHub failed', err?.message || err);
+    return null;
+  }
+};
+
 module.exports = {
   uploadToGitHub,
   deleteFromGitHub,
+  renameOnGitHub,
   uploadMultipleToGitHub,
   isGitHubUrl,
 };

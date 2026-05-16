@@ -135,15 +135,67 @@ const deleteFromLocal = async (fileUrl) => {
 
 const isLocalUrl = (url) => Boolean(url) && url.includes('/uploads/');
 
+/**
+ * Rename an existing locally-stored file. Resolves the file on disk from
+ * its public URL, renames it to `newFilename` within the same folder, and
+ * returns the new public URL. Returns null if the source can't be found.
+ *
+ * Legacy GitHub URLs are not renamed — they're returned as-is.
+ *
+ * @param {string} oldUrl       – Existing public URL of the file
+ * @param {string} newFilename  – Target filename within the same folder
+ * @returns {Promise<string|null>}
+ */
+const renameLocally = async (oldUrl, newFilename) => {
+  if (!oldUrl || !newFilename) return null;
+  if (!isLocalUrl(oldUrl)) {
+    // Legacy GitHub-stored file — nothing we can do without a token.
+    return null;
+  }
+
+  const match = oldUrl.match(/\/uploads\/(.+)$/);
+  if (!match) return null;
+  const relPath = match[1].split('?')[0];
+
+  const slash = relPath.indexOf('/');
+  const folder = slash > -1 ? relPath.slice(0, slash) : 'uploads';
+
+  const oldExt = path.extname(relPath);
+  // Force the extension to match the existing file so we don't end up with
+  // double extensions (`X_Pro-1.jpg.jpg`) when the caller hands us a name
+  // without one.
+  const targetName = path.extname(newFilename)
+    ? newFilename
+    : `${newFilename}${oldExt}`;
+
+  const baseDir = getBaseDir();
+  const oldPath = path.join(baseDir, relPath);
+  const newPath = path.join(baseDir, folder, targetName);
+
+  if (oldPath === newPath) {
+    return oldUrl;
+  }
+
+  try {
+    await fsp.rename(oldPath, newPath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  return buildPublicUrl(folder, targetName);
+};
+
 module.exports = {
   // Real names
   uploadToLocal,
   uploadMultipleToLocal,
   deleteFromLocal,
+  renameLocally,
   isLocalUrl,
   // Aliases for githubStorage compatibility
   uploadToGitHub:         uploadToLocal,
   uploadMultipleToGitHub: uploadMultipleToLocal,
   deleteFromGitHub:       deleteFromLocal,
+  renameOnGitHub:         renameLocally,
   isGitHubUrl:            isLocalUrl,
 };

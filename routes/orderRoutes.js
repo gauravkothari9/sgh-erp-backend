@@ -18,6 +18,7 @@ const {
   deleteOrder,
   setPrimaryImage,
   uploadMedia,
+  renameMediaToSku,
 } = require('../controllers/orderController');
 const { protect, requirePermission } = require('../middleware/auth');
 const { uploadDocument, uploadImage } = require('../middleware/upload');
@@ -65,6 +66,14 @@ router.post(
   requirePermission('orders', 'create'),
   uploadImage.array('images', 20),
   uploadMedia
+);
+
+// Rename media files to a new SKU prefix (used when the user edits an
+// order item's companySKU after images were already uploaded).
+router.post(
+  '/rename-media',
+  requirePermission('orders', 'create'),
+  renameMediaToSku
 );
 
 // Order images (multiple)

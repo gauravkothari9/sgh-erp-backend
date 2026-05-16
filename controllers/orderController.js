@@ -9,6 +9,7 @@ const {
   uploadToGitHub,
   uploadMultipleToGitHub,
   deleteFromGitHub,
+  renameOnGitHub,
   isGitHubUrl,
 } = require('../utils/localStorage');
 const {
@@ -19,10 +20,29 @@ const {
 } = require('../utils/apiResponse');
 
 // ─── Helper: generate a unique filename from a multer memory file ───────────
+// Structured client names from Create Order — anything matching `_Pro`,
+// `_Bar`, or `_Cmt` — are taken as-is so the asset on GitHub matches the
+// SKU-based name the user expects (e.g. JD-4421_Pro-1.jpg, JD-4421_Bar.jpg).
+// If a duplicate already exists in the GitHub folder, the underlying
+// uploader updates it via SHA (overwrite is intentional for these).
+//
+// Everything else falls back to the legacy `<prefix>-<stamp>` scheme so
+// unrelated uploads (documents, photos without a SKU) stay collision-safe.
+const STRUCTURED_NAME = /_(Pro|Bar|Cmt)(-\d+)?$/i;
+
 const uniqueName = (prefix, originalname) => {
   const ext = path.extname(originalname);
+  const baseRaw = path.basename(originalname, ext);
+  const base = (baseRaw || '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  if (base && STRUCTURED_NAME.test(base)) {
+    return `${base}${ext}`;
+  }
+
   const stamp = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-  return `${prefix}-${stamp}${ext}`;
+  return base ? `${base}-${stamp}${ext}` : `${prefix}-${stamp}${ext}`;
 };
 
 // ─── Helper: Upload multer memory files to GitHub ───────────────────────────
@@ -401,6 +421,71 @@ exports.uploadMedia = async (req, res, next) => {
   const urls = await uploadFilesToGitHub(req.files, 'img', 'images');
 
   successResponse(res, { urls }, 'Media uploaded');
+};
+
+// ─── @POST /api/v1/orders/rename-media ──────────────────────────────────────
+// Bulk-rename a set of media URLs to a new SKU prefix. The endpoint walks
+// each URL, looks for the structured `_(Pro|Bar|Cmt)(-N)?` suffix from the
+// upload renamer, and rewrites the file under `<newSku>_<suffix>.<ext>`.
+//
+// URLs that don't carry the structured suffix are returned unchanged — this
+// keeps the catalogue autofill case safe (those URLs use their original
+// filenames). The response is a mapping the client uses to swap URLs in its
+// local item state.
+exports.renameMediaToSku = async (req, res) => {
+  const { urls = [], sku = '' } = req.body || {};
+
+  const safeSku = String(sku || '').trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!safeSku) throw new AppError('A non-empty SKU is required', 400);
+  if (!Array.isArray(urls) || urls.length === 0) {
+    successResponse(res, { mapping: {}, renamed: 0, skipped: 0 }, 'Nothing to rename');
+    return;
+  }
+
+  // Matches our client-side rename pattern. Captured group 1 is the role
+  // tag (Pro/Bar/Cmt) and group 2 is the optional `-N` index.
+  const STRUCTURED = /_(Pro|Bar|Cmt)(-\d+)?$/i;
+
+  const mapping = {};
+  let renamed = 0;
+  let skipped = 0;
+
+  for (const url of urls) {
+    if (!url || typeof url !== 'string') { skipped++; continue; }
+    const filename = url.split('/').pop().split('?')[0];
+    const dot = filename.lastIndexOf('.');
+    const base = dot > -1 ? filename.slice(0, dot) : filename;
+    const ext = dot > -1 ? filename.slice(dot) : '';
+
+    const match = base.match(STRUCTURED);
+    if (!match) {
+      mapping[url] = url;
+      skipped++;
+      continue;
+    }
+
+    const role = match[1];          // Pro / Bar / Cmt
+    const index = match[2] || '';   // "-N" or ""
+    const newBase = `${safeSku}_${role}${index}`;
+    if (newBase === base) {
+      mapping[url] = url;
+      skipped++;
+      continue;
+    }
+
+    const newName = `${newBase}${ext}`;
+    const newUrl = await renameOnGitHub(url, newName, 'images');
+    if (newUrl) {
+      mapping[url] = newUrl;
+      renamed++;
+    } else {
+      // Failed (file missing, legacy URL, etc.) — leave the original.
+      mapping[url] = url;
+      skipped++;
+    }
+  }
+
+  successResponse(res, { mapping, renamed, skipped }, 'Rename complete');
 };
 
 // ─── @POST /api/v1/orders/:id/images ────────────────────────────────────────
