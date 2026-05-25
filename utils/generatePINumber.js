@@ -1,34 +1,15 @@
-const Order = require('../models/Order');
+// PI-YYYY-XXXX, allocated atomically via VoucherSequence.
 
-/**
- * Generates a unique Proforma Invoice Number in format: PI-YYYY-XXXX
- */
+const prisma = require('../src/lib/prisma');
+
 const generatePINumber = async () => {
   const year = new Date().getFullYear();
-
-  const latest = await Order.findOne(
-    { proformaInvoiceNumber: new RegExp(`^PI-${year}-`) },
-    { proformaInvoiceNumber: 1 },
-    { sort: { proformaInvoiceNumber: -1 }, lean: true }
-  );
-
-  let nextSeq = 1;
-  if (latest && latest.proformaInvoiceNumber) {
-    const parts = latest.proformaInvoiceNumber.split('-');
-    const lastSeq = parseInt(parts[parts.length - 1], 10);
-    if (!isNaN(lastSeq)) nextSeq = lastSeq + 1;
-  }
-
-  const padded = String(nextSeq).padStart(4, '0');
-  const piNumber = `PI-${year}-${padded}`;
-
-  // Check uniqueness
-  const exists = await Order.findOne({ proformaInvoiceNumber: piNumber }, { _id: 1 }).lean();
-  if (exists) {
-    return generatePINumber();
-  }
-
-  return piNumber;
+  const seq = await prisma.voucherSequence.upsert({
+    where: { prefix_year: { prefix: 'PI', year } },
+    update: { last: { increment: 1 } },
+    create: { prefix: 'PI', year, last: 1 },
+  });
+  return `PI-${year}-${String(seq.last).padStart(4, '0')}`;
 };
 
 module.exports = generatePINumber;

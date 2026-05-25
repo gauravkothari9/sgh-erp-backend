@@ -12,14 +12,25 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 
-const connectDB = require('./config/db');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 
-// Route imports
+// Route imports — v1 office
 const authRoutes = require('./routes/authRoutes');
 const customerRoutes = require('./routes/customerRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const buyerCatalogueRoutes = require('./routes/buyerCatalogueRoutes');
+const showroomProductRoutes = require('./routes/showroomProductRoutes');
+
+// v2 — Showroom Inventory module
+const v2AuthRoutes = require('./src/modules/auth/auth.routes');
+const v2UserRoutes = require('./src/modules/users/users.routes');
+const v2LocationRoutes = require('./src/modules/locations/locations.routes');
+const v2ProductRoutes = require('./src/modules/products/products.routes');
+const v2InstanceRoutes = require('./src/modules/instances/instances.routes');
+const v2StockRoutes = require('./src/modules/stock/stock.routes');
+const v2ReservationRoutes = require('./src/modules/reservations/reservations.routes');
+const v2SalesRoutes = require('./src/modules/sales/sales.routes');
+const v2ReportRoutes = require('./src/modules/reports/reports.routes');
 
 const app = express();
 
@@ -27,17 +38,6 @@ const app = express();
 // Behind Cloudflare Tunnel, the real client IP arrives in X-Forwarded-For.
 // Trust 1 hop (the tunnel) so express-rate-limit can identify users correctly.
 app.set('trust proxy', 1);
-
-// ─── Ensure DB connection before handling any request (serverless fix) ───────
-app.use(async (req, res, next) => {
-  try {
-    await connectDB();
-  } catch (err) {
-    console.error('MongoDB Connection Failed:', err.message);
-    return res.status(503).json({ success: false, message: 'Database unavailable' });
-  }
-  next();
-});
 
 // ─── Security Middleware ────────────────────────────────────────────────────
 app.use(helmet({
@@ -53,8 +53,20 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 // ─── CORS ───────────────────────────────────────────────────────────────────
+// Allow:
+//  - the production frontend (CLIENT_URL)
+//  - the Vite dev server (localhost:5173)
+//  - any Vercel preview deployment for this project (sghcrafts-*.vercel.app)
+const allowedOrigin = (origin) => {
+  if (!origin) return true;                                                       // server-to-server, curl
+  if (origin === process.env.CLIENT_URL) return true;                             // prod
+  if (origin === 'http://localhost:5173') return true;                            // local dev
+  if (/^https:\/\/sghcrafts(-[a-z0-9-]+)?\.vercel\.app$/.test(origin)) return true; // any vercel preview
+  return false;
+};
+
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: (origin, cb) => allowedOrigin(origin) ? cb(null, true) : cb(new Error('CORS: ' + origin)),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -97,18 +109,26 @@ app.get('/api/v1/health', (req, res) => {
   });
 });
 
-// ─── API Routes ─────────────────────────────────────────────────────────────
+// ─── API Routes (v1 — Postgres) ─────────────────────────────────────────────
+// NOTE: auth + customers are fully ported. orders, buyer-catalogue, and
+// showroom-products are mounted but return 501 — see TODO in their
+// controller files for the porting plan.
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/customers', customerRoutes);
 app.use('/api/v1/orders', orderRoutes);
 app.use('/api/v1/buyer-catalogue', buyerCatalogueRoutes);
+app.use('/api/v1/showroom-products', showroomProductRoutes);
 
-// ─── Future Module Routes (placeholders) ────────────────────────────────────
-// app.use('/api/v1/production', productionRoutes);
-// app.use('/api/v1/manufacturing', manufacturingRoutes);
-// app.use('/api/v1/qc', qcRoutes);
-// app.use('/api/v1/polish', polishRoutes);
-// app.use('/api/v1/packaging', packagingRoutes);
+// ─── API Routes (v2 — Postgres / Prisma showroom inventory) ─────────────────
+app.use('/api/v2/auth', v2AuthRoutes);
+app.use('/api/v2/users', v2UserRoutes);
+app.use('/api/v2/locations', v2LocationRoutes);
+app.use('/api/v2/products', v2ProductRoutes);
+app.use('/api/v2/instances', v2InstanceRoutes);
+app.use('/api/v2/stock', v2StockRoutes);
+app.use('/api/v2/reservations', v2ReservationRoutes);
+app.use('/api/v2/sales', v2SalesRoutes);
+app.use('/api/v2/reports', v2ReportRoutes);
 
 // ─── Error Handling ─────────────────────────────────────────────────────────
 app.use(notFound);

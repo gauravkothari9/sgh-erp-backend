@@ -16,34 +16,43 @@ const errorHandler = (err, req, res, next) => {
   let message = err.message || 'Internal Server Error';
   let errors = null;
 
-  // ─── Mongoose validation error ───────────────────────────────────────────
-  if (err.name === 'ValidationError') {
+  // ─── Zod validation errors (v2 modules) ──────────────────────────────────
+  if (err.name === 'ZodError' && Array.isArray(err.issues)) {
     statusCode = 400;
-    errors = Object.values(err.errors).map((e) => ({
-      field: e.path,
-      message: e.message,
+    errors = err.issues.map((i) => ({
+      field: i.path?.join('.') || '',
+      message: i.message,
     }));
-    // Build a human-readable message that names the offending field(s) so
-    // the frontend toast can tell the user *what* didn't match instead of a
-    // generic "Validation failed".
-    const summary = errors
-      .map((e) => `${e.field}: ${e.message}`)
-      .join(' · ');
+    const summary = errors.map((e) => `${e.field}: ${e.message}`).join(' · ');
     message = `Validation failed — ${summary}`;
   }
 
-  // ─── Mongoose duplicate key ──────────────────────────────────────────────
-  if (err.code === 11000) {
-    statusCode = 409;
-    const field = Object.keys(err.keyValue)[0];
-    const value = err.keyValue[field];
-    message = `Duplicate value: ${field} "${value}" already exists`;
+  // ─── Prisma known request errors ─────────────────────────────────────────
+  // P2002 = unique constraint, P2003 = FK constraint, P2025 = record not found,
+  // P2000 = value too long. See: https://www.prisma.io/docs/reference/api-reference/error-reference
+  if (err.code && typeof err.code === 'string' && err.code.startsWith('P')) {
+    if (err.code === 'P2002') {
+      statusCode = 409;
+      const target = Array.isArray(err.meta?.target) ? err.meta.target.join(', ') : err.meta?.target;
+      message = target
+        ? `Duplicate value on ${target}. That record already exists.`
+        : 'Duplicate value — record already exists.';
+    } else if (err.code === 'P2025') {
+      statusCode = 404;
+      message = err.meta?.cause || 'Record not found';
+    } else if (err.code === 'P2003') {
+      statusCode = 400;
+      message = 'Cannot complete the operation: a referenced record does not exist or is still in use.';
+    } else if (err.code === 'P2000') {
+      statusCode = 400;
+      message = `Value too long for the target column${err.meta?.column_name ? ` (${err.meta.column_name})` : ''}.`;
+    }
   }
 
-  // ─── Mongoose cast error (invalid ObjectId) ──────────────────────────────
-  if (err.name === 'CastError') {
+  // ─── Prisma client validation (bad query shape) ──────────────────────────
+  if (err.name === 'PrismaClientValidationError') {
     statusCode = 400;
-    message = `Invalid ${err.path}: ${err.value}`;
+    message = 'Request did not match the expected shape. Check field names and types.';
   }
 
   // ─── JWT errors ──────────────────────────────────────────────────────────
@@ -57,7 +66,7 @@ const errorHandler = (err, req, res, next) => {
     message = 'Token expired. Please log in again.';
   }
 
-  // ─── Express-validator errors ────────────────────────────────────────────
+  // ─── Express body-parser ─────────────────────────────────────────────────
   if (err.type === 'entity.parse.failed') {
     statusCode = 400;
     message = 'Invalid JSON in request body';

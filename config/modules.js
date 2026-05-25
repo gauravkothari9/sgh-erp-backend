@@ -29,6 +29,9 @@ const MODULES = [
   { key: 'sample',          label: 'Sample',            department: 'Inventory', parent: null },
   { key: 'inventory',       label: 'Inventory',         department: 'Inventory', parent: null },
 
+  // Showroom — physical retail floors with multiple section rooms.
+  { key: 'showroom',        label: 'Showroom',          department: 'Showroom',  parent: null },
+
   // Admin / System
   { key: 'reports',         label: 'Reports',           department: 'Admin',     parent: null },
   { key: 'users',           label: 'User Management',   department: 'Admin',     parent: null },

@@ -1,127 +1,131 @@
-const BuyerCatalogue = require('../models/BuyerCatalogue');
+const prisma = require('../src/lib/prisma');
 const { AppError } = require('../middleware/errorHandler');
-const { successResponse, paginatedResponse, buildPagination } = require('../utils/apiResponse');
+const {
+  successResponse,
+  paginatedResponse,
+  buildPagination,
+} = require('../utils/apiResponse');
+
+// Shape a catalogue product for the wire — exposes _id and a `barcode`
+// object the legacy frontend reads (Prisma stores barcodeText/barcodeImage
+// as separate columns).
+const shapeProduct = (p) => ({
+  ...p,
+  _id: p.id,
+  barcode: { text: p.barcodeText || '', image: p.barcodeImage || '' },
+});
 
 // ─── @GET /api/v1/buyer-catalogue ───────────────────────────────────────────
-// List catalogue folders, supporting ?search= and pagination
-exports.getBuyerFolders = async (req, res, next) => {
+// Folder list with pagination. `?search=` matches fileNumber OR the customer's
+// companyName.
+exports.getBuyerFolders = async (req, res) => {
   const { page = 1, limit = 20, search } = req.query;
-
-  const filter = {};
-  
-  if (search) {
-    // To search by buyer name, we need to populate customer or do an aggregate.
-    // For simplicity with Mongoose, if search is used, we can query catalogues 
-    // by fileNumber or do a lookup on customer.
-    // Let's do a simple fileNumber regex first:
-    filter.fileNumber = { $regex: search, $options: 'i' };
-  }
-
-  // To support searching by customer name smoothly, let's just fetch everything,
-  // populate customer, and filter in memory if "search" is provided (assuming modest folder counts).
-  // Alternatively, use an aggregate. Let's use aggregate for robust search.
-  
   const pg = parseInt(page, 10);
   const lim = parseInt(limit, 10);
-  const skip = (pg - 1) * lim;
 
-  let pipeline = [
-    {
-      $lookup: {
-        from: 'customers',
-        localField: 'buyerId',
-        foreignField: '_id',
-        as: 'buyer'
-      }
+  // We need each folder + the related customer + product count. Pull a
+  // generous slice, do the optional search filter in JS, then paginate. For
+  // very large catalogues this should grow into a SQL view, but the volume
+  // here is modest.
+  const all = await prisma.buyerCatalogueFolder.findMany({
+    orderBy: { lastUpdated: 'desc' },
+    include: {
+      _count: { select: { products: true } },
     },
-    { $unwind: { path: '$buyer', preserveNullAndEmptyArrays: true } }
-  ];
-
-  if (search) {
-    pipeline.push({
-      $match: {
-        $or: [
-          { fileNumber: { $regex: search, $options: 'i' } },
-          { 'buyer.companyName': { $regex: search, $options: 'i' } },
-        ]
-      }
-    });
-  }
-
-  // Count total for pagination
-  const countPipeline = [...pipeline, { $count: 'total' }];
-  const countRes = await BuyerCatalogue.aggregate(countPipeline);
-  const total = countRes.length > 0 ? countRes[0].total : 0;
-
-  // Fetch data
-  pipeline.push({ $sort: { lastUpdated: -1 } });
-  pipeline.push({ $skip: skip });
-  pipeline.push({ $limit: lim });
-  
-  // Project necessary fields
-  pipeline.push({
-    $project: {
-      _id: 1,
-      fileNumber: 1,
-      lastUpdated: 1,
-      buyerName: '$buyer.companyName',
-      productCount: { $size: { $ifNull: ['$products', []] } }
-    }
   });
 
-  const folders = await BuyerCatalogue.aggregate(pipeline);
-  
-  paginatedResponse(res, folders, buildPagination(total, pg, lim), 'Buyer folders retrieved');
-};
+  // Hydrate the customers in one query.
+  const buyerIds = [...new Set(all.map((f) => f.buyerId))];
+  const buyers = buyerIds.length
+    ? await prisma.customer.findMany({
+        where: { id: { in: buyerIds } },
+        select: { id: true, companyName: true },
+      })
+    : [];
+  const buyerMap = Object.fromEntries(buyers.map((b) => [b.id, b]));
 
-// ─── @GET /api/v1/buyer-catalogue/:fileNumber ─────────────────────────────────
-// Get full catalogue for a specific buyer/folder
-exports.getCatalogueDetail = async (req, res, next) => {
-  const { fileNumber } = req.params;
+  let folders = all.map((f) => ({
+    _id: f.id,
+    fileNumber: f.fileNumber,
+    lastUpdated: f.lastUpdated,
+    buyerName: buyerMap[f.buyerId]?.companyName || null,
+    productCount: f._count.products,
+  }));
 
-  const catalogue = await BuyerCatalogue.findOne({ fileNumber })
-    .populate('buyerId', 'companyName')
-    .lean();
-
-  if (!catalogue) {
-    throw new AppError('Catalogue not found for this file number', 404);
-  }
-
-  // Optional: support search inside the catalogue products
-  let products = catalogue.products || [];
-  if (req.query.search) {
-    const s = req.query.search.toLowerCase();
-    products = products.filter(p => 
-      p.sku.toLowerCase().includes(s) || 
-      (p.itemDescription && p.itemDescription.toLowerCase().includes(s))
+  if (search) {
+    const s = String(search).toLowerCase();
+    folders = folders.filter(
+      (f) =>
+        (f.fileNumber || '').toLowerCase().includes(s) ||
+        (f.buyerName || '').toLowerCase().includes(s)
     );
   }
 
-  successResponse(res, { 
-    buyer: catalogue.buyerId, 
-    fileNumber: catalogue.fileNumber, 
-    lastUpdated: catalogue.lastUpdated,
-    products 
-  }, 'Catalogue detail retrieved');
+  const total = folders.length;
+  const start = (pg - 1) * lim;
+  const slice = folders.slice(start, start + lim);
+
+  paginatedResponse(res, slice, buildPagination(total, pg, lim), 'Buyer folders retrieved');
+};
+
+// ─── @GET /api/v1/buyer-catalogue/:fileNumber ─────────────────────────────────
+exports.getCatalogueDetail = async (req, res) => {
+  const { fileNumber } = req.params;
+  // fileNumber isn't unique on its own (the unique key is buyerId+fileNumber),
+  // but in practice it's unique per customer file — first match is fine.
+  const folder = await prisma.buyerCatalogueFolder.findFirst({
+    where: { fileNumber },
+    include: { products: { orderBy: { sku: 'asc' } } },
+  });
+  if (!folder) throw new AppError('Catalogue not found for this file number', 404);
+
+  const buyer = await prisma.customer.findUnique({
+    where: { id: folder.buyerId },
+    select: { id: true, companyName: true },
+  });
+
+  let products = folder.products || [];
+  if (req.query.search) {
+    const s = String(req.query.search).toLowerCase();
+    products = products.filter(
+      (p) =>
+        (p.sku || '').toLowerCase().includes(s) ||
+        (p.itemDescription || '').toLowerCase().includes(s)
+    );
+  }
+
+  successResponse(
+    res,
+    {
+      buyer: buyer ? { _id: buyer.id, companyName: buyer.companyName } : null,
+      fileNumber: folder.fileNumber,
+      lastUpdated: folder.lastUpdated,
+      products: products.map(shapeProduct),
+    },
+    'Catalogue detail retrieved'
+  );
 };
 
 // ─── @GET /api/v1/buyer-catalogue/:fileNumber/sku/:sku ──────────────────────
-// Single product lookup for Autofill
-exports.getSkuLookup = async (req, res, next) => {
+// Single-product lookup for the Order Autofill flow.
+exports.getSkuLookup = async (req, res) => {
   const { fileNumber, sku } = req.params;
+  const upper = String(sku).toUpperCase();
 
-  const catalogue = await BuyerCatalogue.findOne(
-    { fileNumber, 'products.sku': sku.toUpperCase() },
-    { 'products.$': 1 }
-  ).lean();
+  const product = await prisma.buyerCatalogueProduct.findFirst({
+    where: {
+      sku: upper,
+      folder: { fileNumber },
+    },
+  });
 
-  if (!catalogue || !catalogue.products || catalogue.products.length === 0) {
+  if (!product) {
     return res.status(200).json({
       success: true,
       data: null,
-      message: 'SKU not found in catalogue' // Don't throw 404, we just return empty so UI handles it gracefully
+      message: 'SKU not found in catalogue',
     });
   }
 
-  successResponse(res, catalogue.products[0], 'SKU logic retrieved');
+  successResponse(res, shapeProduct(product), 'SKU logic retrieved');
 };

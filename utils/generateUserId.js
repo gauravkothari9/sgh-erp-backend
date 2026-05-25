@@ -1,34 +1,16 @@
-const User = require('../models/User');
+// Sequential SGH-U-XXXX user IDs allocated via the shared VoucherSequence
+// table. One row per year — but for user IDs we use a constant "ALL" year so
+// the sequence never resets.
 
-/**
- * Generates a unique User ID in the format: SGH-U-XXXX (zero-padded, sequential).
- * Uses the latest existing userId to derive the next sequence, with a
- * race-condition retry guard if the generated ID already exists.
- */
+const prisma = require('../src/lib/prisma');
+
 const generateUserId = async () => {
-  const latest = await User.findOne(
-    { userId: /^SGH-U-\d{4}$/ },
-    { userId: 1 },
-    { sort: { userId: -1 }, lean: true }
-  );
-
-  let nextSeq = 1;
-  if (latest && latest.userId) {
-    const parts = latest.userId.split('-');
-    const lastSeq = parseInt(parts[parts.length - 1], 10);
-    if (!Number.isNaN(lastSeq)) nextSeq = lastSeq + 1;
-  }
-
-  const padded = String(nextSeq).padStart(4, '0');
-  const userId = `SGH-U-${padded}`;
-
-  // Race-condition guard: if somehow this ID was just taken, recurse.
-  const exists = await User.findOne({ userId }, { _id: 1 }).lean();
-  if (exists) {
-    return generateUserId();
-  }
-
-  return userId;
+  const seq = await prisma.voucherSequence.upsert({
+    where: { prefix_year: { prefix: 'SGH-U', year: 0 } },
+    update: { last: { increment: 1 } },
+    create: { prefix: 'SGH-U', year: 0, last: 1 },
+  });
+  return `SGH-U-${String(seq.last).padStart(4, '0')}`;
 };
 
 module.exports = generateUserId;
