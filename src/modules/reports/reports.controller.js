@@ -1,33 +1,42 @@
-const prisma = require('../../lib/prisma');
+const mongoose = require('mongoose');
+const { Location, ProductInstance, ShowroomSale } = require('../../models');
 const { ok } = require('../../lib/response');
 
-const showroomSummary = async (req, res) => {
+const showroomSummary = async (_req, res) => {
   // One row per showroom: count + total listed value + active reservations.
-  const showrooms = await prisma.location.findMany({
-    where: { type: 'SHOWROOM', isActive: true },
-    orderBy: { code: 'asc' },
-  });
+  const showrooms = await Location.find({ type: 'SHOWROOM', isActive: true }).sort({ code: 1 });
   const rows = await Promise.all(
     showrooms.map(async (s) => {
-      const [pieces, agg, reserved, sold30] = await Promise.all([
-        prisma.productInstance.count({
-          where: { currentLocationId: s.id, isActive: true, currentStage: { in: ['IN_SHOWROOM', 'AVAILABLE'] } },
+      const [pieces, sumAgg, reserved, sold30] = await Promise.all([
+        ProductInstance.countDocuments({
+          currentLocation: s._id,
+          isActive: true,
+          currentStage: { $in: ['IN_SHOWROOM', 'AVAILABLE'] },
         }),
-        prisma.productInstance.aggregate({
-          where: { currentLocationId: s.id, isActive: true, currentStage: { in: ['IN_SHOWROOM', 'AVAILABLE'] } },
-          _sum: { listedPrice: true },
+        ProductInstance.aggregate([
+          {
+            $match: {
+              currentLocation: s._id,
+              isActive: true,
+              currentStage: { $in: ['IN_SHOWROOM', 'AVAILABLE'] },
+            },
+          },
+          { $group: { _id: null, total: { $sum: { $ifNull: ['$listedPrice', 0] } } } },
+        ]),
+        ProductInstance.countDocuments({
+          currentLocation: s._id,
+          isActive: true,
+          currentStage: 'RESERVED',
         }),
-        prisma.productInstance.count({
-          where: { currentLocationId: s.id, isActive: true, currentStage: 'RESERVED' },
-        }),
-        prisma.showroomSale.count({
-          where: { showroomId: s.id, saleDate: { gte: new Date(Date.now() - 30 * 86_400_000) } },
+        ShowroomSale.countDocuments({
+          showroom: s._id,
+          saleDate: { $gte: new Date(Date.now() - 30 * 86_400_000) },
         }),
       ]);
       return {
-        showroom: s,
+        showroom: { id: s._id.toString(), code: s.code, name: s.name, type: s.type },
         pieces,
-        totalValue: agg._sum.listedPrice || 0,
+        totalValue: sumAgg[0]?.total || 0,
         reserved,
         soldLast30Days: sold30,
       };
@@ -36,16 +45,18 @@ const showroomSummary = async (req, res) => {
   ok(res, { rows });
 };
 
-const aging = async (req, res) => {
-  // Pieces still on display, with days-on-display. Sorted oldest-first.
-  const items = await prisma.productInstance.findMany({
-    where: { isActive: true, currentStage: { in: ['IN_SHOWROOM', 'AVAILABLE'] }, arrivalDate: { not: null } },
-    orderBy: { arrivalDate: 'asc' },
-    include: { product: true, currentLocation: true },
-  });
+const aging = async (_req, res) => {
+  const items = await ProductInstance.find({
+    isActive: true,
+    currentStage: { $in: ['IN_SHOWROOM', 'AVAILABLE'] },
+    arrivalDate: { $ne: null },
+  })
+    .sort({ arrivalDate: 1 })
+    .populate('product')
+    .populate('currentLocation');
   const now = Date.now();
   const rows = items.map((i) => ({
-    id: i.id,
+    id: i._id.toString(),
     instanceCode: i.instanceCode,
     productName: i.product?.name,
     showroom: i.currentLocation?.code,
@@ -59,26 +70,37 @@ const salesSummary = async (req, res) => {
   const where = {};
   if (req.query.from || req.query.to) {
     where.saleDate = {};
-    if (req.query.from) where.saleDate.gte = new Date(req.query.from);
-    if (req.query.to) where.saleDate.lte = new Date(req.query.to);
+    if (req.query.from) where.saleDate.$gte = new Date(req.query.from);
+    if (req.query.to) where.saleDate.$lte = new Date(req.query.to);
   }
-  if (req.query.showroomId) where.showroomId = Number(req.query.showroomId);
+  if (req.query.showroomId && mongoose.isValidObjectId(req.query.showroomId))
+    where.showroom = req.query.showroomId;
 
-  const [items, totals] = await prisma.$transaction([
-    prisma.showroomSale.findMany({
-      where,
-      orderBy: { saleDate: 'desc' },
-      include: { instance: { include: { product: true } }, showroom: true },
-    }),
-    prisma.showroomSale.aggregate({ where, _sum: { salePrice: true, discount: true }, _count: true }),
+  const [items, agg] = await Promise.all([
+    ShowroomSale.find(where)
+      .sort({ saleDate: -1 })
+      .populate({ path: 'instance', populate: { path: 'product' } })
+      .populate('showroom'),
+    ShowroomSale.aggregate([
+      { $match: where },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          revenue: { $sum: '$salePrice' },
+          discount: { $sum: '$discount' },
+        },
+      },
+    ]),
   ]);
+  const totals = agg[0] || { count: 0, revenue: 0, discount: 0 };
   ok(res, {
     items,
     totals: {
-      count: totals._count,
-      revenue: totals._sum.salePrice || 0,
-      discount: totals._sum.discount || 0,
-      avgSalePrice: totals._count ? Number(totals._sum.salePrice || 0) / totals._count : 0,
+      count: totals.count,
+      revenue: totals.revenue || 0,
+      discount: totals.discount || 0,
+      avgSalePrice: totals.count ? Number(totals.revenue || 0) / totals.count : 0,
     },
   });
 };
@@ -87,22 +109,18 @@ const crossShowroomSearch = async (req, res) => {
   const q = (req.query.q || '').toString().trim();
   const where = { isActive: true };
   if (q) {
-    where.OR = [
-      { instanceCode: { contains: q, mode: 'insensitive' } },
-      { product: { name: { contains: q, mode: 'insensitive' } } },
-      { product: { code: { contains: q, mode: 'insensitive' } } },
-    ];
+    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    where.instanceCode = re;
   }
-  if (req.query.material) where.product = { ...(where.product || {}), materialType: req.query.material };
   if (req.query.stage) where.currentStage = req.query.stage;
 
-  const items = await prisma.productInstance.findMany({
-    where,
-    include: { product: true, currentLocation: true },
-    orderBy: { createdAt: 'desc' },
-    take: 200,
-  });
-  // Group by showroom code.
+  let items = await ProductInstance.find(where)
+    .populate('product')
+    .populate('currentLocation')
+    .sort({ createdAt: -1 })
+    .limit(200);
+  if (req.query.material) items = items.filter((i) => i.product?.materialType === req.query.material);
+
   const groups = {};
   for (const i of items) {
     const key = i.currentLocation?.code || 'UNKNOWN';

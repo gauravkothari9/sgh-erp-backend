@@ -2,8 +2,9 @@
 // permissions, and assigned showroom (parent location → sub-showroom).
 
 const bcrypt = require('bcryptjs');
+const mongoose = require('mongoose');
 const { z } = require('zod');
-const prisma = require('../../lib/prisma');
+const { User, Location } = require('../../models');
 const { ok, created, fail } = require('../../lib/response');
 const { validate } = require('../../lib/validate');
 const generateUserId = require('../../../utils/generateUserId');
@@ -25,7 +26,7 @@ const MODULE_KEYS = [
 ];
 
 const sanitize = (u) => ({
-  id: u.id,
+  id: u._id.toString(),
   userId: u.userId,
   email: u.email,
   fullName: u.fullName,
@@ -35,19 +36,30 @@ const sanitize = (u) => ({
   department: u.department,
   permissions: u.permissions || {},
   isActive: u.isActive,
-  assignedLocationId: u.assignedLocationId,
-  assignedLocation: u.assignedLocation
+  assignedLocationId: u.assignedLocation
+    ? (u.assignedLocation._id || u.assignedLocation).toString()
+    : null,
+  assignedLocation: u.assignedLocation && u.assignedLocation._id
     ? {
-        id: u.assignedLocation.id,
+        id: u.assignedLocation._id.toString(),
         code: u.assignedLocation.code,
         name: u.assignedLocation.name,
         type: u.assignedLocation.type,
-        parentId: u.assignedLocation.parentId,
+        parentId: u.assignedLocation.parent ? u.assignedLocation.parent.toString() : null,
       }
     : null,
   lastLogin: u.lastLogin,
   createdAt: u.createdAt,
 });
+
+const objectIdOrNull = z
+  .union([z.string(), z.null()])
+  .optional()
+  .transform((v) => {
+    if (v == null || v === '') return null;
+    if (!mongoose.isValidObjectId(v)) throw new z.ZodError([{ code: 'custom', message: 'Invalid id', path: [] }]);
+    return v;
+  });
 
 const modulesSchema = z
   .record(z.string(), z.boolean())
@@ -60,28 +72,22 @@ const modulesSchema = z
   });
 
 const list = async (_req, res) => {
-  const users = await prisma.user.findMany({
-    orderBy: [{ isActive: 'desc' }, { createdAt: 'desc' }],
-    include: { assignedLocation: true },
-  });
+  const users = await User.find({})
+    .sort({ isActive: -1, createdAt: -1 })
+    .populate('assignedLocation');
   ok(res, { users: users.map(sanitize), moduleKeys: MODULE_KEYS });
 };
 
 const getOne = async (req, res) => {
-  const id = Number(req.params.id);
-  const user = await prisma.user.findUnique({
-    where: { id },
-    include: { assignedLocation: true },
-  });
+  if (!mongoose.isValidObjectId(req.params.id)) return fail(res, 404, 'User not found');
+  const user = await User.findById(req.params.id).populate('assignedLocation');
   if (!user) return fail(res, 404, 'User not found');
   ok(res, { user: sanitize(user) });
 };
 
-// Validate that an assignedLocationId, when provided, exists and that the
-// role / location-type combination makes sense.
 async function resolveAssignment({ role, assignedLocationId }) {
-  if (assignedLocationId == null) return { ok: true, value: null };
-  const loc = await prisma.location.findUnique({ where: { id: assignedLocationId } });
+  if (!assignedLocationId) return { ok: true, value: null };
+  const loc = await Location.findById(assignedLocationId);
   if (!loc) return { ok: false, message: 'Assigned location does not exist' };
   if (role === 'SHOWROOM_STAFF' && loc.type !== 'SHOWROOM') {
     return { ok: false, message: 'Showroom staff must be assigned to a sub-showroom' };
@@ -89,7 +95,7 @@ async function resolveAssignment({ role, assignedLocationId }) {
   if (role === 'MANAGER' && loc.type !== 'LOCATION') {
     return { ok: false, message: 'Managers must be assigned to a showroom (parent), not a sub-showroom' };
   }
-  return { ok: true, value: assignedLocationId };
+  return { ok: true, value: loc._id };
 }
 
 const createSchema = {
@@ -102,7 +108,7 @@ const createSchema = {
     designation: z.string().optional().nullable(),
     department: z.string().optional().nullable(),
     modules: modulesSchema,
-    assignedLocationId: z.number().int().nullable().optional(),
+    assignedLocationId: objectIdOrNull,
     isActive: z.boolean().optional(),
   }),
 };
@@ -110,7 +116,7 @@ const createSchema = {
 const createOne = async (req, res) => {
   const body = req.body;
   const email = body.email.toLowerCase();
-  const dup = await prisma.user.findUnique({ where: { email } });
+  const dup = await User.findOne({ email });
   if (dup) return fail(res, 409, 'A user with that email already exists');
 
   const assignment = await resolveAssignment({
@@ -122,22 +128,20 @@ const createOne = async (req, res) => {
   const userId = await generateUserId();
   const passwordHash = await bcrypt.hash(body.password, 12);
 
-  const user = await prisma.user.create({
-    data: {
-      userId,
-      fullName: body.fullName,
-      email,
-      passwordHash,
-      phone: body.phone ?? null,
-      role: body.role,
-      designation: body.designation ?? null,
-      department: body.department ?? null,
-      permissions: { modules: body.modules || {} },
-      assignedLocationId: assignment.value,
-      isActive: body.isActive ?? true,
-    },
-    include: { assignedLocation: true },
+  const user = await User.create({
+    userId,
+    fullName: body.fullName,
+    email,
+    passwordHash,
+    phone: body.phone ?? null,
+    role: body.role,
+    designation: body.designation ?? null,
+    department: body.department ?? null,
+    permissions: { modules: body.modules || {} },
+    assignedLocation: assignment.value,
+    isActive: body.isActive ?? true,
   });
+  await user.populate('assignedLocation');
   created(res, { user: sanitize(user) });
 };
 
@@ -150,85 +154,88 @@ const updateSchema = {
     designation: z.string().optional().nullable(),
     department: z.string().optional().nullable(),
     modules: modulesSchema,
-    assignedLocationId: z.number().int().nullable().optional(),
+    assignedLocationId: objectIdOrNull,
     isActive: z.boolean().optional(),
     password: z.string().min(8).optional(),
   }),
 };
 
 const updateOne = async (req, res) => {
-  const id = Number(req.params.id);
-  const existing = await prisma.user.findUnique({ where: { id } });
+  if (!mongoose.isValidObjectId(req.params.id)) return fail(res, 404, 'User not found');
+  const existing = await User.findById(req.params.id);
   if (!existing) return fail(res, 404, 'User not found');
 
   const body = req.body;
-  const data = {};
+  const updates = {};
 
-  if (body.fullName !== undefined) data.fullName = body.fullName;
+  if (body.fullName !== undefined) updates.fullName = body.fullName;
   if (body.email !== undefined) {
     const lowered = body.email.toLowerCase();
     if (lowered !== existing.email) {
-      const dup = await prisma.user.findUnique({ where: { email: lowered } });
+      const dup = await User.findOne({ email: lowered });
       if (dup) return fail(res, 409, 'A user with that email already exists');
-      data.email = lowered;
+      updates.email = lowered;
     }
   }
-  if (body.phone !== undefined) data.phone = body.phone;
-  if (body.role !== undefined) data.role = body.role;
-  if (body.designation !== undefined) data.designation = body.designation;
-  if (body.department !== undefined) data.department = body.department;
-  if (body.isActive !== undefined) data.isActive = body.isActive;
+  if (body.phone !== undefined) updates.phone = body.phone;
+  if (body.role !== undefined) updates.role = body.role;
+  if (body.designation !== undefined) updates.designation = body.designation;
+  if (body.department !== undefined) updates.department = body.department;
+  if (body.isActive !== undefined) updates.isActive = body.isActive;
   if (body.modules !== undefined) {
-    data.permissions = { ...(existing.permissions || {}), modules: body.modules || {} };
-    data.permissionsVersion = (existing.permissionsVersion || 1) + 1;
+    updates.permissions = { ...(existing.permissions || {}), modules: body.modules || {} };
+    updates.permissionsVersion = (existing.permissionsVersion || 1) + 1;
   }
   if (body.password) {
-    data.passwordHash = await bcrypt.hash(body.password, 12);
-    data.refreshTokenHash = null; // force re-login after a password reset
+    updates.passwordHash = await bcrypt.hash(body.password, 12);
+    updates.refreshTokenHash = null; // force re-login after a password reset
   }
 
   const nextRole = body.role ?? existing.role;
   if (body.assignedLocationId !== undefined || body.role !== undefined) {
-    const desired = body.assignedLocationId !== undefined ? body.assignedLocationId : existing.assignedLocationId;
+    const desired =
+      body.assignedLocationId !== undefined ? body.assignedLocationId : existing.assignedLocation;
     const assignment = await resolveAssignment({ role: nextRole, assignedLocationId: desired });
     if (!assignment.ok) return fail(res, 400, assignment.message);
-    data.assignedLocationId = assignment.value;
+    updates.assignedLocation = assignment.value;
   }
 
   // Safety: never let an admin demote/deactivate the last active admin.
-  const demoting = data.role && data.role !== 'ADMIN';
-  const deactivating = data.isActive === false;
+  const demoting = updates.role && updates.role !== 'ADMIN';
+  const deactivating = updates.isActive === false;
   if (existing.role === 'ADMIN' && (demoting || deactivating)) {
-    const otherAdmins = await prisma.user.count({
-      where: { role: 'ADMIN', isActive: true, NOT: { id } },
+    const otherAdmins = await User.countDocuments({
+      role: 'ADMIN',
+      isActive: true,
+      _id: { $ne: existing._id },
     });
     if (otherAdmins === 0) return fail(res, 400, 'Cannot demote or disable the last active admin');
   }
 
-  const user = await prisma.user.update({
-    where: { id },
-    data,
-    include: { assignedLocation: true },
-  });
+  const user = await User.findByIdAndUpdate(existing._id, updates, { new: true }).populate(
+    'assignedLocation'
+  );
   ok(res, { user: sanitize(user) });
 };
 
 const remove = async (req, res) => {
-  const id = Number(req.params.id);
-  if (req.user.id === id) return fail(res, 400, 'You cannot delete your own account');
-  const existing = await prisma.user.findUnique({ where: { id } });
+  if (!mongoose.isValidObjectId(req.params.id)) return fail(res, 404, 'User not found');
+  if (req.user._id.toString() === req.params.id)
+    return fail(res, 400, 'You cannot delete your own account');
+  const existing = await User.findById(req.params.id);
   if (!existing) return fail(res, 404, 'User not found');
   if (existing.role === 'ADMIN') {
-    const otherAdmins = await prisma.user.count({
-      where: { role: 'ADMIN', isActive: true, NOT: { id } },
+    const otherAdmins = await User.countDocuments({
+      role: 'ADMIN',
+      isActive: true,
+      _id: { $ne: existing._id },
     });
     if (otherAdmins === 0) return fail(res, 400, 'Cannot delete the last active admin');
   }
   // Soft-delete: deactivate so foreign-keyed history rows survive.
-  await prisma.user.update({
-    where: { id },
-    data: { isActive: false, refreshTokenHash: null },
-  });
+  existing.isActive = false;
+  existing.refreshTokenHash = null;
+  await existing.save();
   ok(res, null, 'User deactivated');
 };
 

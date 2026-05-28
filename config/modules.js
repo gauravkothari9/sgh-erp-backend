@@ -18,22 +18,10 @@ const MODULES = [
   { key: 'orders',          label: 'Orders',            department: 'Office',    parent: null },
   { key: 'buyerCatalogue',  label: 'Buyer Catalogue',   department: 'Office',    parent: null },
 
-  // Factory Department
-  { key: 'production',      label: 'Production',        department: 'Factory',   parent: null },
-  { key: 'manufacturing',   label: 'Manufacturing',     department: 'Factory',   parent: null },
-  { key: 'qc',              label: 'Quality Control',   department: 'Factory',   parent: null },
-  { key: 'polish',          label: 'Polish',            department: 'Factory',   parent: null },
-  { key: 'packaging',       label: 'Packaging',         department: 'Factory',   parent: null },
-
-  // Inventory & Samples
-  { key: 'sample',          label: 'Sample',            department: 'Inventory', parent: null },
-  { key: 'inventory',       label: 'Inventory',         department: 'Inventory', parent: null },
-
   // Showroom — physical retail floors with multiple section rooms.
   { key: 'showroom',        label: 'Showroom',          department: 'Showroom',  parent: null },
 
   // Admin / System
-  { key: 'reports',         label: 'Reports',           department: 'Admin',     parent: null },
   { key: 'users',           label: 'User Management',   department: 'Admin',     parent: null },
   { key: 'settings',        label: 'System Settings',   department: 'Admin',     parent: null },
 ];

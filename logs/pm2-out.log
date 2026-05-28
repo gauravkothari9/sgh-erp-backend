@@ -2,3 +2,63 @@
 2026-05-25T04:36:56: prisma:error Error in PostgreSQL connection: Error { kind: Io, cause: Some(Os { code: 10054, kind: ConnectionReset, message: "An existing connection was forcibly closed by the remote host." }) }
 2026-05-25T11:47:06: prisma:error Error in PostgreSQL connection: Error { kind: Io, cause: Some(Os { code: 10054, kind: ConnectionReset, message: "An existing connection was forcibly closed by the remote host." }) }
 2026-05-25T12:40:28: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-25T13:31:58: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-25T13:32:09: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T19:35:07: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T19:35:07: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T19:36:14: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T19:36:14: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T21:18:21: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T21:18:21: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T21:18:43: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T21:18:43: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T21:27:35: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T21:27:35: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T21:27:37: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T21:27:37: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T21:55:21: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T21:55:21: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T21:58:48: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T21:58:48: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T22:34:16: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T22:34:16: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T22:39:17: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T22:39:17: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T22:45:08: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T22:45:08: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T22:51:56: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T22:51:56: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T22:54:58: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T22:54:58: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-26T23:05:39: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-26T23:05:39: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T15:55:41: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T15:55:41: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T16:16:37: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T16:16:37: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T16:19:42: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T16:19:42: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T16:22:29: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T16:22:29: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T16:26:19: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T16:26:19: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T16:30:41: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T16:30:41: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T16:34:20: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T16:34:20: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T16:40:08: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T16:40:08: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T16:42:41: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T16:42:41: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T16:46:14: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T16:46:14: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T16:57:45: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T16:57:45: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T17:00:18: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T17:00:18: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T21:06:45: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T21:06:45: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T21:15:24: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T21:15:24: 🚀 SGH ERP Server running on port 5000 [production]
+2026-05-27T21:53:38: ✓ MongoDB connected: 127.0.0.1/sgh_erp
+2026-05-27T21:53:38: 🚀 SGH ERP Server running on port 5000 [production]

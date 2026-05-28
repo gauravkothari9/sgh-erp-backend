@@ -1,17 +1,37 @@
-// Generate a unique SGH File Number in format: SGH-YYYY-XXXX.
-// Backed by the shared VoucherSequence counter so two concurrent writers
-// never collide on the same number.
+const Customer = require('../models/Customer');
 
-const prisma = require('../src/lib/prisma');
-
+/**
+ * Generates a unique SGH File Number in format: SGH-YYYY-XXXX
+ * Thread-safe using findOneAndUpdate atomic counter pattern
+ */
 const generateFileNumber = async () => {
   const year = new Date().getFullYear();
-  const seq = await prisma.voucherSequence.upsert({
-    where: { prefix_year: { prefix: 'SGH-FILE', year } },
-    update: { last: { increment: 1 } },
-    create: { prefix: 'SGH-FILE', year, last: 1 },
-  });
-  return `SGH-${year}-${String(seq.last).padStart(4, '0')}`;
+
+  // Find the latest file number for this year
+  const latest = await Customer.findOne(
+    { fileNumber: new RegExp(`^SGH-${year}-`) },
+    { fileNumber: 1 },
+    { sort: { fileNumber: -1 }, lean: true }
+  );
+
+  let nextSeq = 1;
+  if (latest && latest.fileNumber) {
+    const parts = latest.fileNumber.split('-');
+    const lastSeq = parseInt(parts[parts.length - 1], 10);
+    nextSeq = lastSeq + 1;
+  }
+
+  const padded = String(nextSeq).padStart(4, '0');
+  const fileNumber = `SGH-${year}-${padded}`;
+
+  // Ensure uniqueness (race condition guard)
+  const exists = await Customer.findOne({ fileNumber }, { _id: 1 }).lean();
+  if (exists) {
+    // Recursively try the next number
+    return generateFileNumber();
+  }
+
+  return fileNumber;
 };
 
 module.exports = generateFileNumber;

@@ -1,37 +1,54 @@
+const mongoose = require('mongoose');
 const { z } = require('zod');
-const prisma = require('../../lib/prisma');
-const { ok, created } = require('../../lib/response');
+const { Location } = require('../../models');
+const { ok, created, fail } = require('../../lib/response');
 const { validate } = require('../../lib/validate');
 
+// Hydrate the parent/children references so the frontend can rely on
+// `parent`, `parentId`, and `children` on every Location response.
+const hydrate = (loc, allLocs) => {
+  const idStr = loc._id.toString();
+  const obj = loc.toObject ? loc.toObject() : loc;
+  return {
+    id: idStr,
+    code: obj.code,
+    name: obj.name,
+    type: obj.type,
+    parentId: obj.parent ? obj.parent.toString() : null,
+    isActive: obj.isActive,
+    createdAt: obj.createdAt,
+    updatedAt: obj.updatedAt,
+    children: allLocs
+      .filter((l) => l.parent && l.parent.toString() === idStr)
+      .map((c) => ({
+        id: c._id.toString(),
+        code: c.code,
+        name: c.name,
+        type: c.type,
+        parentId: idStr,
+        isActive: c.isActive,
+      })),
+  };
+};
+
 const list = async (req, res) => {
-  const { type } = req.query;
   const where = {};
-  if (type) where.type = type;
-
-  const locations = await prisma.location.findMany({
-    where,
-    orderBy: [{ type: 'asc' }, { code: 'asc' }],
-    include: { children: { orderBy: { code: 'asc' } }, parent: true },
-  });
-
-  // For convenience, also expose a clean two-level hierarchy.
-  const parents = locations.filter((l) => l.type === 'LOCATION');
-  const hierarchy = parents.map((p) => ({
-    ...p,
-    children: locations.filter((c) => c.parentId === p.id),
-  }));
-
+  if (req.query.type) where.type = req.query.type;
+  const all = await Location.find({}).sort({ type: 1, code: 1 });
+  const filtered = req.query.type ? all.filter((l) => l.type === req.query.type) : all;
+  const locations = filtered.map((l) => hydrate(l, all));
+  const hierarchy = all
+    .filter((l) => l.type === 'LOCATION')
+    .map((p) => hydrate(p, all));
   ok(res, { locations, hierarchy });
 };
 
 const getOne = async (req, res) => {
-  const id = Number(req.params.id);
-  const location = await prisma.location.findUnique({
-    where: { id },
-    include: { children: true, parent: true },
-  });
-  if (!location) return res.status(404).json({ success: false, message: 'Not found' });
-  ok(res, { location });
+  if (!mongoose.isValidObjectId(req.params.id)) return fail(res, 404, 'Not found');
+  const location = await Location.findById(req.params.id);
+  if (!location) return fail(res, 404, 'Not found');
+  const all = await Location.find({});
+  ok(res, { location: hydrate(location, all) });
 };
 
 const createSchema = {
@@ -39,28 +56,46 @@ const createSchema = {
     code: z.string().min(1).max(40),
     name: z.string().min(1),
     type: z.enum(['LOCATION', 'SHOWROOM', 'VIRTUAL']),
-    parentId: z.number().int().optional().nullable(),
+    parentId: z
+      .union([z.string(), z.null()])
+      .optional()
+      .transform((v) => (v && mongoose.isValidObjectId(v) ? v : null)),
   }),
 };
 
 const createOne = async (req, res) => {
-  const data = req.body;
-  const location = await prisma.location.create({ data });
-  created(res, { location });
+  const { code, name, type, parentId } = req.body;
+  const location = await Location.create({ code, name, type, parent: parentId || null });
+  const all = await Location.find({});
+  created(res, { location: hydrate(location, all) });
 };
 
 const updateSchema = {
   body: z.object({
     name: z.string().min(1).optional(),
     isActive: z.boolean().optional(),
-    parentId: z.number().int().nullable().optional(),
+    parentId: z
+      .union([z.string(), z.null()])
+      .optional()
+      .transform((v) => {
+        if (v === null) return null;
+        if (v === undefined) return undefined;
+        return mongoose.isValidObjectId(v) ? v : null;
+      }),
   }),
 };
 
 const updateOne = async (req, res) => {
-  const id = Number(req.params.id);
-  const location = await prisma.location.update({ where: { id }, data: req.body });
-  ok(res, { location });
+  if (!mongoose.isValidObjectId(req.params.id)) return fail(res, 404, 'Not found');
+  const updates = {};
+  if (req.body.name !== undefined) updates.name = req.body.name;
+  if (req.body.isActive !== undefined) updates.isActive = req.body.isActive;
+  if (req.body.parentId !== undefined) updates.parent = req.body.parentId;
+
+  const location = await Location.findByIdAndUpdate(req.params.id, updates, { new: true });
+  if (!location) return fail(res, 404, 'Not found');
+  const all = await Location.find({});
+  ok(res, { location: hydrate(location, all) });
 };
 
 module.exports = {

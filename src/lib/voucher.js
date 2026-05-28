@@ -1,7 +1,8 @@
-// Allocate sequential, year-resetting, zero-padded voucher numbers
-// transactionally so two concurrent writers never collide on the same number.
+// Allocate sequential, year-resetting, zero-padded voucher numbers using an
+// atomic findOneAndUpdate on the Counter collection — concurrent writers
+// never collide on the same number.
 
-const prisma = require('./prisma');
+const Counter = require('../models/Counter');
 
 const PREFIX = {
   RECEIPT: 'RCT',
@@ -13,13 +14,14 @@ const PREFIX = {
   INSTANCE: 'INS',
 };
 
-async function nextNumber(prefix, year = new Date().getFullYear(), tx = prisma) {
-  const seq = await tx.voucherSequence.upsert({
-    where: { prefix_year: { prefix, year } },
-    update: { last: { increment: 1 } },
-    create: { prefix, year, last: 1 },
-  });
-  return `${prefix}-${year}-${String(seq.last).padStart(5, '0')}`;
+async function nextNumber(prefix, year = new Date().getFullYear()) {
+  const _id = `${prefix}:${year}`;
+  const doc = await Counter.findOneAndUpdate(
+    { _id },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  return `${prefix}-${year}-${String(doc.seq).padStart(5, '0')}`;
 }
 
 module.exports = { PREFIX, nextNumber };

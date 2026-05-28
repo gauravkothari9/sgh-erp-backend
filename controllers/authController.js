@@ -1,6 +1,5 @@
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
-const prisma = require('../src/lib/prisma');
+const User = require('../models/User');
 const { AppError } = require('../middleware/errorHandler');
 const { successResponse, createdResponse } = require('../utils/apiResponse');
 const generateUserId = require('../utils/generateUserId');
@@ -8,6 +7,8 @@ const {
   MODULES,
   ACTIONS,
   MODULE_KEYS,
+  isValidModule,
+  isValidAction,
   buildEmptyPermissionsMap,
   getDepartments,
 } = require('../config/modules');
@@ -15,102 +16,39 @@ const {
 // ─── Constants ───────────────────────────────────────────────────────────────
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_WINDOW_MS = 15 * 60 * 1000; // 15 min lockout after MAX attempts
-const MIN_LEN_REGULAR = 8;
-const MIN_LEN_ADMIN = 12;
-
-// ─── Role helpers ────────────────────────────────────────────────────────────
-// Frontend speaks PascalCase ('Admin' / 'Employee'). Prisma stores the enum
-// values ('ADMIN' / 'EMPLOYEE'). Translate at the edges.
-const FROM_FRONTEND_ROLE = {
-  Admin: 'ADMIN',
-  Employee: 'EMPLOYEE',
-  Manager: 'MANAGER',
-  ShowroomStaff: 'SHOWROOM_STAFF',
-};
-const TO_FRONTEND_ROLE = {
-  ADMIN: 'Admin',
-  EMPLOYEE: 'Employee',
-  MANAGER: 'Manager',
-  SHOWROOM_STAFF: 'ShowroomStaff',
-};
-const toDbRole = (r) => FROM_FRONTEND_ROLE[r] || r;
-const toFrontendRole = (r) => TO_FRONTEND_ROLE[r] || r;
-
-// ─── Password strength rules ─────────────────────────────────────────────────
-const validatePasswordStrength = (password, role) => {
-  if (typeof password !== 'string') return 'Password is required';
-  const dbRole = toDbRole(role);
-  if (dbRole === 'ADMIN') {
-    if (password.length < MIN_LEN_ADMIN) return `Admin password must be at least ${MIN_LEN_ADMIN} characters`;
-    if (!/[A-Z]/.test(password)) return 'Admin password must contain an uppercase letter';
-    if (!/[a-z]/.test(password)) return 'Admin password must contain a lowercase letter';
-    if (!/[0-9]/.test(password)) return 'Admin password must contain a digit';
-    if (!/[^A-Za-z0-9]/.test(password)) return 'Admin password must contain a symbol';
-  } else {
-    if (password.length < MIN_LEN_REGULAR) return `Password must be at least ${MIN_LEN_REGULAR} characters`;
-    if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
-      return 'Password must include letters and digits';
-    }
-  }
-  return null;
-};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-const effectivePermissions = (user) => {
-  if (user.role === 'ADMIN') {
-    const map = buildEmptyPermissionsMap();
-    for (const key of MODULE_KEYS) for (const a of ACTIONS) map[key][a] = true;
-    return map;
-  }
-  const stored = user.permissions || {};
-  const map = buildEmptyPermissionsMap();
-  for (const key of MODULE_KEYS) {
-    if (stored[key]) for (const a of ACTIONS) map[key][a] = !!stored[key][a];
-  }
-  return map;
-};
-
-// Normalize an incoming permissions object into the canonical shape —
-// silently drops unknown modules/actions and coerces values to booleans.
-const sanitizePermissions = (input) => {
-  const out = buildEmptyPermissionsMap();
-  if (!input || typeof input !== 'object') return out;
-  for (const moduleKey of MODULE_KEYS) {
-    const incoming = input[moduleKey];
-    if (!incoming || typeof incoming !== 'object') continue;
-    for (const action of ACTIONS) {
-      out[moduleKey][action] = !!incoming[action];
-    }
-  }
-  return out;
-};
-
-// When `rememberMe` is true the token has no expiry; otherwise it's the
-// short session window plus the inactivity timeout in middleware/auth.js.
+// When `rememberMe` is true the token is minted with NO expiry at all, so
+// the user stays signed in indefinitely — the only way out is an explicit
+// logout (which wipes the token client-side). The inactivity timeout in
+// middleware/auth.js is also skipped for rm-tokens.
+//
+// Otherwise we fall back to the short session window (default 12h) plus the
+// inactivity timeout.
 const signToken = (user, rememberMe = false) => {
   const payload = {
-    id: user.id,
+    id: user._id,
     role: user.role,
     pv: user.permissionsVersion,
     rm: rememberMe ? 1 : 0,
   };
   const options = {};
-  if (!rememberMe) options.expiresIn = process.env.JWT_EXPIRES_IN || '12h';
+  if (!rememberMe) {
+    options.expiresIn = process.env.JWT_EXPIRES_IN || '12h';
+  }
   return jwt.sign(payload, process.env.JWT_SECRET, options);
 };
 
-// Frontend-shaped user payload. _id is preserved as the integer id for code
-// that already uses `user._id`; `id` is also exposed for cleaner consumers.
 const buildAuthPayload = (user) => ({
-  _id: user.id,
-  id: user.id,
+  _id: user._id,
   userId: user.userId,
   fullName: user.fullName,
   email: user.email,
-  role: toFrontendRole(user.role),
+  role: user.role,
   designation: user.designation,
   department: user.department,
-  permissions: effectivePermissions(user),
+  factory: user.factory || 'jhalamand',
+  permissions: user.effectivePermissions(),
   permissionsVersion: user.permissionsVersion,
   avatar: user.avatar,
   phone: user.phone,
@@ -127,18 +65,48 @@ const sendTokenResponse = (user, statusCode, res, rememberMe = false) => {
   });
 };
 
+// Normalize an incoming permissions object into the canonical shape —
+// silently drops unknown modules/actions and coerces values to booleans so
+// a malformed client can't introduce garbage fields.
+const sanitizePermissions = (input) => {
+  const out = buildEmptyPermissionsMap();
+  if (!input || typeof input !== 'object') return out;
+  for (const moduleKey of MODULE_KEYS) {
+    const incoming = input[moduleKey];
+    if (!incoming || typeof incoming !== 'object') continue;
+    for (const action of ACTIONS) {
+      out[moduleKey][action] = !!incoming[action];
+    }
+  }
+  return out;
+};
+
 const countActiveAdmins = () =>
-  prisma.user.count({ where: { role: 'ADMIN', isActive: true } });
+  User.countDocuments({ role: 'Admin', isActive: true });
 
 // ─── @GET /api/v1/auth/bootstrap-status ──────────────────────────────────────
+// Public. Reports whether the instance has zero users at all — which is the
+// only state in which the Login screen is allowed to expose the "create first
+// admin" flow. As soon as any Admin or Employee exists, this flips to false
+// and the bootstrap endpoint below starts rejecting.
 exports.getBootstrapStatus = async (req, res) => {
-  const userCount = await prisma.user.count();
-  successResponse(res, { canBootstrap: userCount === 0 });
+  const userCount = await User.estimatedDocumentCount();
+  let canBootstrap = userCount === 0;
+  if (canBootstrap) {
+    // estimatedDocumentCount can be slightly stale on some engines; confirm.
+    const exact = await User.countDocuments({});
+    canBootstrap = exact === 0;
+  }
+  successResponse(res, { canBootstrap });
 };
 
 // ─── @POST /api/v1/auth/bootstrap-admin ──────────────────────────────────────
+// Public, but only usable when the database contains zero users. Creates the
+// very first Admin account so a fresh install can sign in without a seed
+// script. The "zero users" check is re-evaluated inside the handler to close
+// the TOCTOU window between the status call and this one.
 exports.bootstrapAdmin = async (req, res) => {
-  const existingCount = await prisma.user.count();
+  const existingCount = await User.countDocuments({});
   if (existingCount > 0) {
     throw new AppError(
       'Bootstrap is disabled — an account already exists. Ask an administrator to create your user.',
@@ -151,51 +119,56 @@ exports.bootstrapAdmin = async (req, res) => {
     throw new AppError('Full name, email and password are required', 400);
   }
 
-  const strengthError = validatePasswordStrength(password, 'Admin');
+  const strengthError = User.validatePasswordStrength(password, 'Admin');
   if (strengthError) throw new AppError(strengthError, 400);
 
   const userId = await generateUserId();
-  const passwordHash = await bcrypt.hash(password, 12);
-  const newUser = await prisma.user.create({
-    data: {
-      userId,
-      fullName,
-      email: email.toLowerCase(),
-      passwordHash,
-      role: 'ADMIN',
-      designation: 'Administrator',
-      department: 'Admin',
-      permissions: buildEmptyPermissionsMap(),
-    },
+  const newUser = await User.create({
+    userId,
+    fullName,
+    email,
+    password,
+    role: 'Admin',
+    designation: 'Administrator',
+    department: 'Admin',
+    factory: 'all',
+    permissions: buildEmptyPermissionsMap(),
   });
 
   sendTokenResponse(newUser, 201, res, false);
 };
 
 // ─── @POST /api/v1/auth/login ─────────────────────────────────────────────────
-exports.login = async (req, res) => {
+exports.login = async (req, res, next) => {
   const { email, password, rememberMe } = req.body;
-  if (!email || !password) throw new AppError('Please provide email and password', 400);
 
-  const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
-  if (!user) throw new AppError('Invalid email or password', 401);
+  if (!email || !password) {
+    throw new AppError('Please provide email and password', 400);
+  }
 
-  if (user.lockUntil && new Date(user.lockUntil) > new Date()) {
+  const user = await User.findOne({ email: email.toLowerCase() }).select(
+    '+password +failedLoginAttempts +lockUntil'
+  );
+
+  if (!user) {
+    throw new AppError('Invalid email or password', 401);
+  }
+
+  if (user.isLocked()) {
     throw new AppError(
       'Account locked due to too many failed login attempts. Try again later.',
       423
     );
   }
 
-  const match = await bcrypt.compare(password, user.passwordHash);
+  const match = await user.comparePassword(password);
   if (!match) {
-    const next = (user.failedLoginAttempts || 0) + 1;
-    const data = { failedLoginAttempts: next };
-    if (next >= MAX_LOGIN_ATTEMPTS) {
-      data.lockUntil = new Date(Date.now() + LOCK_WINDOW_MS);
-      data.failedLoginAttempts = 0;
+    user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+    if (user.failedLoginAttempts >= MAX_LOGIN_ATTEMPTS) {
+      user.lockUntil = new Date(Date.now() + LOCK_WINDOW_MS);
+      user.failedLoginAttempts = 0;
     }
-    await prisma.user.update({ where: { id: user.id }, data });
+    await user.save({ validateBeforeSave: false });
     throw new AppError('Invalid email or password', 401);
   }
 
@@ -203,17 +176,13 @@ exports.login = async (req, res) => {
     throw new AppError('Your account has been deactivated. Contact an administrator.', 403);
   }
 
-  const fresh = await prisma.user.update({
-    where: { id: user.id },
-    data: {
-      failedLoginAttempts: 0,
-      lockUntil: null,
-      lastLogin: new Date(),
-      lastActiveAt: new Date(),
-    },
-  });
+  user.failedLoginAttempts = 0;
+  user.lockUntil = undefined;
+  user.lastLogin = new Date();
+  user.lastActiveAt = new Date();
+  await user.save({ validateBeforeSave: false });
 
-  sendTokenResponse(fresh, 200, res, !!rememberMe);
+  sendTokenResponse(user, 200, res, !!rememberMe);
 };
 
 // ─── @POST /api/v1/auth/logout ───────────────────────────────────────────────
@@ -223,32 +192,30 @@ exports.logout = async (req, res) => {
 
 // ─── @GET /api/v1/auth/me ────────────────────────────────────────────────────
 exports.getMe = async (req, res) => {
-  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  const user = await User.findById(req.user._id);
   successResponse(res, { user: buildAuthPayload(user) });
 };
 
 // ─── @PUT /api/v1/auth/update-password ──────────────────────────────────────
 exports.updatePassword = async (req, res) => {
   const { currentPassword, newPassword } = req.body;
-  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
-  if (!user) throw new AppError('User not found', 404);
 
-  const ok = await bcrypt.compare(currentPassword, user.passwordHash);
-  if (!ok) throw new AppError('Current password is incorrect', 401);
+  const user = await User.findById(req.user._id).select('+password');
+  if (!(await user.comparePassword(currentPassword))) {
+    throw new AppError('Current password is incorrect', 401);
+  }
 
-  const strengthError = validatePasswordStrength(newPassword, user.role);
+  const strengthError = User.validatePasswordStrength(newPassword, user.role);
   if (strengthError) throw new AppError(strengthError, 400);
 
-  const passwordHash = await bcrypt.hash(newPassword, 12);
-  const updated = await prisma.user.update({
-    where: { id: user.id },
-    data: { passwordHash },
-  });
+  user.password = newPassword;
+  await user.save();
 
-  sendTokenResponse(updated, 200, res);
+  sendTokenResponse(user, 200, res);
 };
 
 // ─── @GET /api/v1/auth/modules ───────────────────────────────────────────────
+// Returns the canonical module/action list for the permission matrix UI.
 exports.getModules = async (req, res) => {
   successResponse(res, {
     modules: MODULES,
@@ -270,6 +237,7 @@ exports.createUser = async (req, res) => {
     phone,
     designation,
     department,
+    factory,
   } = req.body;
 
   if (!fullName || !email || !password) {
@@ -277,48 +245,52 @@ exports.createUser = async (req, res) => {
   }
 
   const effectiveRole = role === 'Admin' ? 'Admin' : 'Employee';
-  const strengthError = validatePasswordStrength(password, effectiveRole);
+  const strengthError = User.validatePasswordStrength(password, effectiveRole);
   if (strengthError) throw new AppError(strengthError, 400);
 
-  const existing = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
-  if (existing) throw new AppError('A user with this email already exists', 409);
+  const existing = await User.findOne({ email: email.toLowerCase() });
+  if (existing) {
+    throw new AppError('A user with this email already exists', 409);
+  }
 
   const finalDesignation =
-    effectiveRole === 'Admin' ? (designation || 'Administrator') : designation;
+    effectiveRole === 'Admin'
+      ? designation || 'Administrator'
+      : designation;
   const finalDepartment =
-    effectiveRole === 'Admin' ? (department || 'Admin') : department;
+    effectiveRole === 'Admin' ? department || 'Admin' : department;
 
   if (effectiveRole === 'Employee' && (!finalDesignation || !finalDepartment)) {
     throw new AppError('Designation and department are required for Employees', 400);
   }
 
   const userId = await generateUserId();
-  const passwordHash = await bcrypt.hash(password, 12);
-  const newUser = await prisma.user.create({
-    data: {
-      userId,
-      fullName,
-      email: email.toLowerCase(),
-      passwordHash,
-      role: toDbRole(effectiveRole),
-      designation: finalDesignation,
-      department: finalDepartment,
-      permissions:
-        effectiveRole === 'Employee'
-          ? sanitizePermissions(permissions)
-          : buildEmptyPermissionsMap(),
-      phone,
-    },
+
+  const newUser = await User.create({
+    userId,
+    fullName,
+    email,
+    password,
+    role: effectiveRole,
+    designation: finalDesignation,
+    department: finalDepartment,
+    factory: effectiveRole === 'Admin' ? 'all' : (factory || 'jhalamand'),
+    permissions:
+      effectiveRole === 'Employee'
+        ? sanitizePermissions(permissions)
+        : buildEmptyPermissionsMap(), // Admin permissions computed on-the-fly
+    phone,
   });
 
   createdResponse(res, { user: buildAuthPayload(newUser) }, 'User created successfully');
 };
 
+// Kept as an alias so /auth/register still resolves — maps to createUser.
 exports.register = exports.createUser;
 
 // @GET /api/v1/auth/users
 exports.getUsers = async (req, res) => {
-  const users = await prisma.user.findMany({ orderBy: { createdAt: 'desc' } });
+  const users = await User.find().sort({ createdAt: -1 });
   successResponse(res, {
     users: users.map(buildAuthPayload),
     count: users.length,
@@ -327,113 +299,126 @@ exports.getUsers = async (req, res) => {
 
 // @GET /api/v1/auth/users/:id
 exports.getUser = async (req, res) => {
-  const user = await prisma.user.findUnique({ where: { id: Number(req.params.id) } });
+  const user = await User.findById(req.params.id);
   if (!user) throw new AppError('User not found', 404);
   successResponse(res, { user: buildAuthPayload(user) });
 };
 
-// @PUT /api/v1/auth/users/:id
+// @PUT /api/v1/auth/users/:id — update profile fields, role, active flag
 exports.updateUser = async (req, res) => {
-  const id = Number(req.params.id);
-  const { fullName, role, isActive, phone, designation, department } = req.body;
-
-  const user = await prisma.user.findUnique({ where: { id } });
+  const { fullName, email, role, isActive, phone, designation, department, factory } = req.body;
+  const user = await User.findById(req.params.id);
   if (!user) throw new AppError('User not found', 404);
 
   // Last-admin protection: prevent demotion or deactivation of the final Admin.
-  if (user.role === 'ADMIN') {
+  if (user.role === 'Admin') {
     const adminCount = await countActiveAdmins();
-    const targetRole = role ? toDbRole(role) : user.role;
-    const beingDemoted = targetRole !== 'ADMIN';
+    const beingDemoted = role && role !== 'Admin';
     const beingDeactivated = isActive === false;
     if (adminCount <= 1 && (beingDemoted || beingDeactivated)) {
-      throw new AppError('Cannot demote or deactivate the last active Admin account.', 400);
+      throw new AppError(
+        'Cannot demote or deactivate the last active Admin account.',
+        400
+      );
     }
   }
 
-  const data = {};
-  if (typeof fullName === 'string') data.fullName = fullName;
-  if (typeof phone === 'string') data.phone = phone;
-  if (typeof designation === 'string') data.designation = designation;
-  if (typeof department === 'string') data.department = department;
-  if (typeof isActive === 'boolean') data.isActive = isActive;
+  if (typeof fullName === 'string') user.fullName = fullName;
+  if (typeof phone === 'string') user.phone = phone;
+  if (typeof designation === 'string') user.designation = designation;
+  if (typeof department === 'string') user.department = department;
+  if (typeof isActive === 'boolean') user.isActive = isActive;
+
+  // Allow admin to update email — check for conflicts first
+  if (email && email.toLowerCase() !== user.email) {
+    const dup = await User.findOne({
+      email: email.toLowerCase(),
+      _id: { $ne: user._id },
+    });
+    if (dup) throw new AppError('A user with this email already exists', 409);
+    user.email = email.toLowerCase();
+  }
 
   if (role === 'Admin' || role === 'Employee') {
-    const targetRole = toDbRole(role);
-    const roleChanging = user.role !== targetRole;
-    data.role = targetRole;
-    if (roleChanging) {
-      data.permissionsVersion = (user.permissionsVersion || 0) + 1;
-      if (targetRole === 'ADMIN') {
-        data.permissions = buildEmptyPermissionsMap();
-        if (!user.designation) data.designation = 'Administrator';
-        if (!user.department) data.department = 'Admin';
-      }
+    const roleChanging = user.role !== role;
+    user.role = role;
+    if (roleChanging && role === 'Admin') {
+      // Clear stored permissions — Admin has synthetic full access.
+      user.permissions = buildEmptyPermissionsMap();
+      user.factory = 'all';
+      if (!user.designation) user.designation = 'Administrator';
+      if (!user.department) user.department = 'Admin';
     }
   }
 
-  const updated = await prisma.user.update({ where: { id }, data });
-  successResponse(res, { user: buildAuthPayload(updated) }, 'User updated successfully');
+  // Update factory if provided and user is Employee
+  if (user.role === 'Employee' && factory) {
+    user.factory = factory;
+  } else if (user.role === 'Admin') {
+    user.factory = 'all';
+  }
+
+  await user.save();
+
+  successResponse(res, { user: buildAuthPayload(user) }, 'User updated successfully');
 };
 
-// @PUT /api/v1/auth/users/:id/permissions
+// @PUT /api/v1/auth/users/:id/permissions — replace permissions map wholesale
 exports.updateUserPermissions = async (req, res) => {
-  const id = Number(req.params.id);
   const { permissions } = req.body;
-
-  const user = await prisma.user.findUnique({ where: { id } });
+  const user = await User.findById(req.params.id);
   if (!user) throw new AppError('User not found', 404);
 
-  if (user.role === 'ADMIN') {
+  if (user.role === 'Admin') {
     throw new AppError('Admin permissions cannot be edited — Admins always have full access.', 400);
   }
 
-  const updated = await prisma.user.update({
-    where: { id },
-    data: {
-      permissions: sanitizePermissions(permissions),
-      permissionsVersion: (user.permissionsVersion || 0) + 1,
-    },
-  });
+  const before = user.effectivePermissions();
+  user.permissions = sanitizePermissions(permissions);
+  await user.save();
 
-  successResponse(res, { user: buildAuthPayload(updated) }, 'Permissions updated successfully');
+  successResponse(
+    res,
+    { user: buildAuthPayload(user) },
+    'Permissions updated successfully'
+  );
 };
 
-// @POST /api/v1/auth/users/:id/reset-password
+// @POST /api/v1/auth/users/:id/reset-password — admin-initiated reset
 exports.resetUserPassword = async (req, res) => {
-  const id = Number(req.params.id);
   const { newPassword } = req.body;
-
-  const user = await prisma.user.findUnique({ where: { id } });
+  const user = await User.findById(req.params.id).select('+password');
   if (!user) throw new AppError('User not found', 404);
 
-  const strengthError = validatePasswordStrength(newPassword, user.role);
+  const strengthError = User.validatePasswordStrength(newPassword, user.role);
   if (strengthError) throw new AppError(strengthError, 400);
 
-  const passwordHash = await bcrypt.hash(newPassword, 12);
-  await prisma.user.update({
-    where: { id },
-    data: { passwordHash, failedLoginAttempts: 0, lockUntil: null },
-  });
+  user.password = newPassword;
+  user.failedLoginAttempts = 0;
+  user.lockUntil = undefined;
+  await user.save();
 
   successResponse(res, {}, 'Password reset successfully');
 };
 
 // @DELETE /api/v1/auth/users/:id
 exports.deleteUser = async (req, res) => {
-  const id = Number(req.params.id);
-  const user = await prisma.user.findUnique({ where: { id } });
+  const user = await User.findById(req.params.id);
   if (!user) throw new AppError('User not found', 404);
 
-  if (id === req.user.id) throw new AppError('You cannot delete your own account.', 400);
+  if (String(user._id) === String(req.user._id)) {
+    throw new AppError('You cannot delete your own account.', 400);
+  }
 
-  if (user.role === 'ADMIN') {
+  if (user.role === 'Admin') {
     const adminCount = await countActiveAdmins();
     if (adminCount <= 1) {
       throw new AppError('Cannot delete the last active Admin account.', 400);
     }
   }
 
-  await prisma.user.delete({ where: { id } });
+  await user.deleteOne();
+
   successResponse(res, {}, 'User deleted successfully');
 };
+
