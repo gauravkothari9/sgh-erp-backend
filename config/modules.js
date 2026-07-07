@@ -13,17 +13,14 @@
 
 const MODULES = [
   // Office Department
-  { key: 'dashboard',       label: 'Dashboard',         department: 'Office',    parent: null },
-  { key: 'customers',       label: 'Customers',         department: 'Office',    parent: null },
-  { key: 'orders',          label: 'Orders',            department: 'Office',    parent: null },
-  { key: 'buyerCatalogue',  label: 'Buyer Catalogue',   department: 'Office',    parent: null },
-
-  // Showroom — physical retail floors with multiple section rooms.
-  { key: 'showroom',        label: 'Showroom',          department: 'Showroom',  parent: null },
+  { key: 'dashboard',       label: 'Dashboard',         department: 'Office', parent: null },
+  { key: 'customers',       label: 'Customers',         department: 'Office', parent: null },
+  { key: 'orders',          label: 'Orders',            department: 'Office', parent: null },
+  { key: 'buyerCatalogue',  label: 'Buyer Catalogue',   department: 'Office', parent: null },
 
   // Admin / System
-  { key: 'users',           label: 'User Management',   department: 'Admin',     parent: null },
-  { key: 'settings',        label: 'System Settings',   department: 'Admin',     parent: null },
+  { key: 'users',           label: 'User Management',   department: 'Admin',  parent: null },
+  { key: 'settings',        label: 'System Settings',   department: 'Admin',  parent: null },
 ];
 
 const ACTIONS = ['create', 'read', 'update', 'delete'];

@@ -1,14 +1,14 @@
 // Vercel serverless entrypoint. `server.js` exports the express app and
 // only calls `app.listen` when not on Vercel.
 require('dotenv').config();
-const { connect } = require('../src/lib/db');
+const mongoose = require('mongoose');
 const app = require('../server');
 
 // Open the Mongo connection once per cold start. Mongoose caches the
 // connection; subsequent invocations on the same instance reuse it.
 let ready;
 function ensureReady() {
-  if (!ready) ready = connect();
+  if (!ready) ready = mongoose.connect(process.env.MONGODB_URI);
   return ready;
 }
 

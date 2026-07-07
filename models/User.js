@@ -53,9 +53,13 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ['Admin', 'Employee'],
+      enum: ['Admin', 'Employee', 'Retailer', 'Wholesaler'],
       default: 'Employee',
       index: true,
+    },
+    customerRef: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Customer',
     },
     designation: {
       type: String,
@@ -209,6 +213,7 @@ userSchema.methods.toJSON = function () {
   obj.fullName = this.fullName;
   obj.designation = this.designation;
   obj.department = this.department;
+  obj.customerRef = this.customerRef;
   obj.permissions = this.effectivePermissions();
   return obj;
 };

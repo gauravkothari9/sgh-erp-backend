@@ -10,26 +10,13 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 
+const mongoose = require('mongoose');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
-const { connect } = require('./src/lib/db');
 
-// v1 — Office module (MongoDB)
 const v1AuthRoutes = require('./routes/authRoutes');
 const v1CustomerRoutes = require('./routes/customerRoutes');
 const v1OrderRoutes = require('./routes/orderRoutes');
 const v1BuyerCatalogueRoutes = require('./routes/buyerCatalogueRoutes');
-const v1InventoryProductRoutes = require('./routes/inventoryProductRoutes');
-
-// v2 — Showroom Inventory module (MongoDB)
-const v2AuthRoutes = require('./src/modules/auth/auth.routes');
-const v2UserRoutes = require('./src/modules/users/users.routes');
-const v2LocationRoutes = require('./src/modules/locations/locations.routes');
-const v2ProductRoutes = require('./src/modules/products/products.routes');
-const v2InstanceRoutes = require('./src/modules/instances/instances.routes');
-const v2StockRoutes = require('./src/modules/stock/stock.routes');
-const v2ReservationRoutes = require('./src/modules/reservations/reservations.routes');
-const v2SalesRoutes = require('./src/modules/sales/sales.routes');
-const v2ReportRoutes = require('./src/modules/reports/reports.routes');
 
 const app = express();
 
@@ -81,30 +68,18 @@ app.get('/api/v1/health', (_req, res) => {
   res.json({ success: true, message: 'SGH ERP API is running', version: '1.0.0', timestamp: new Date().toISOString() });
 });
 
-// ─── API Routes (v1 — Office module MongoDB) ────────────────
 app.use('/api/v1/auth', v1AuthRoutes);
 app.use('/api/v1/customers', v1CustomerRoutes);
 app.use('/api/v1/orders', v1OrderRoutes);
 app.use('/api/v1/buyer-catalogue', v1BuyerCatalogueRoutes);
-app.use('/api/v1/inventory-products', v1InventoryProductRoutes);
-
-// ─── API Routes (v2 — MongoDB / Mongoose Showroom Inventory) ────────────────
-app.use('/api/v2/auth', v2AuthRoutes);
-app.use('/api/v2/users', v2UserRoutes);
-app.use('/api/v2/locations', v2LocationRoutes);
-app.use('/api/v2/products', v2ProductRoutes);
-app.use('/api/v2/instances', v2InstanceRoutes);
-app.use('/api/v2/stock', v2StockRoutes);
-app.use('/api/v2/reservations', v2ReservationRoutes);
-app.use('/api/v2/sales', v2SalesRoutes);
-app.use('/api/v2/reports', v2ReportRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
 
 if (!process.env.VERCEL) {
   const PORT = process.env.PORT || 5000;
-  connect()
+  mongoose
+    .connect(process.env.MONGODB_URI)
     .then(() => {
       const server = app.listen(PORT, () => {
         console.log(`🚀 SGH ERP Server running on port ${PORT} [${process.env.NODE_ENV || 'production'}]`);
