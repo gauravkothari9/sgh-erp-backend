@@ -78,3 +78,5 @@
 2026-07-05T15:36:38: 🚀 SGH ERP Server running on port 5000 [production]
 2026-07-07T14:53:31: ✓ MongoDB connected: 127.0.0.1/sgh_erp
 2026-07-07T14:53:31: 🚀 SGH ERP Server running on port 5000 [production]
+2026-07-12T16:04:55: 🔌 Realtime (socket.io) ready
+2026-07-12T16:04:55: 🚀 SGH ERP Server running on port 5000 [production]
