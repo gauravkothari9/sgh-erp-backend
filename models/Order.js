@@ -11,6 +11,33 @@ const commentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// ─── Production Stage History Sub-schema ─────────────────────────────────────
+// One entry per stage move — the paper-trail that replaces walking the floor to
+// ask "who moved this and when".
+const productionHistorySchema = new mongoose.Schema(
+  {
+    stage: { type: String },
+    location: { type: String },
+    note: { type: String, trim: true },
+    photo: { type: String }, // optional proof photo (GitHub URL)
+    movedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'V1User' },
+    movedByName: { type: String },
+    at: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+// How many units of an item sit at each stage. An item with quantity 10 can be
+// split across stages (e.g. 3 @ Polish, 5 @ QC, 2 @ Packing) as units move
+// forward in batches. Sum of qty === item.quantity.
+const stageQtySchema = new mongoose.Schema(
+  {
+    stage: { type: String },
+    qty: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
 // ─── Order Item Sub-schema ───────────────────────────────────────────────────
 const orderItemSchema = new mongoose.Schema(
   {
@@ -125,6 +152,54 @@ const orderItemSchema = new mongoose.Schema(
     jobOrderStatus: {
       type: String,
       default: null,
+    },
+
+    // ─── Factory production tracking ─────────────────────────────────────────
+    // Item-level workflow state across the Jhalamand + Kakani units. The stage
+    // sequences and rules live in config/production.js — this only stores state.
+    production: {
+      // ─ Routing (set on the Order Detail page) ─
+      branch: {
+        type: String,
+        enum: ['Jhalamand', 'Kakani', ''],
+        default: '',
+      },
+      productionType: {                                 // category: Antique | Production
+        type: String,
+        enum: ['Antique', 'Production', ''],
+        default: '',
+      },
+      sourcing: {                                       // Kakani only: In-house | Outsourced | In Stock
+        type: String,
+        enum: ['In-house', 'Outsourced', 'In Stock', ''],
+        default: '',
+      },
+      madeAt: {                                         // legacy unit field, kept in sync with branch
+        type: String,
+        enum: ['Jhalamand', 'Kakani', ''],
+        default: '',
+      },
+      maker: { type: String, trim: true, default: '' },
+      // ─ Shop-floor flags ─
+      running: { type: Boolean, default: false },   // currently being worked on
+      priority: { type: Boolean, default: false },  // flagged high priority
+      // ─ Outsourced work (sourcing === 'Outsourced') ─
+      outsource: {
+        supplierName:          { type: String, trim: true, default: '' },
+        supplierContact:       { type: String, trim: true, default: '' },
+        sampleProvidedDate:    { type: Date },
+        lastCallDate:          { type: Date },
+        estimatedDeliveryDate: { type: Date },
+      },
+      // ─ Stage state ─
+      // Per-stage unit distribution (batch tracking). currentStage below is the
+      // earliest occupied stage, kept for display/grouping/back-compat.
+      stageQty: { type: [stageQtySchema], default: undefined },
+      currentStage: { type: String, default: '' },     // '' = not started
+      currentLocation: { type: String, default: '' },
+      startedAt: { type: Date },
+      completedAt: { type: Date },                      // set at Ready for Container
+      history: { type: [productionHistorySchema], default: [] },
     },
 
     // ─── Sort order ──────────────────────────────────────────────────────────

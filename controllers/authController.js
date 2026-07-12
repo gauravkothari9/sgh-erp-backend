@@ -3,6 +3,7 @@ const User = require('../models/User');
 const { AppError } = require('../middleware/errorHandler');
 const { successResponse, createdResponse } = require('../utils/apiResponse');
 const generateUserId = require('../utils/generateUserId');
+const { notify } = require('../utils/notify');
 const {
   MODULES,
   ACTIONS,
@@ -196,6 +197,34 @@ exports.getMe = async (req, res) => {
   successResponse(res, { user: buildAuthPayload(user) });
 };
 
+// ─── @PUT /api/v1/auth/me ───────────────────────────────────────────────────
+// Self-service profile edit. Deliberately narrow: a user can change how they're
+// reached, never their role, department or permissions — that's an Admin action.
+exports.updateMe = async (req, res) => {
+  const user = await User.findById(req.user._id);
+  if (!user) throw new AppError('User not found', 404);
+
+  const { fullName, email, phone, designation } = req.body;
+
+  if (fullName !== undefined) {
+    if (!fullName.trim()) throw new AppError('Name cannot be empty.', 400);
+    user.fullName = fullName.trim();
+  }
+  if (email !== undefined) {
+    const clean = email.trim().toLowerCase();
+    if (clean && clean !== user.email) {
+      const taken = await User.exists({ email: clean, _id: { $ne: user._id } });
+      if (taken) throw new AppError('That email is already in use.', 409);
+    }
+    user.email = clean;
+  }
+  if (phone !== undefined) user.phone = phone.trim();
+  if (designation !== undefined) user.designation = designation.trim();
+
+  await user.save();
+  successResponse(res, { user: buildAuthPayload(user) }, 'Profile updated');
+};
+
 // ─── @PUT /api/v1/auth/update-password ──────────────────────────────────────
 exports.updatePassword = async (req, res) => {
   const { currentPassword, newPassword } = req.body;
@@ -281,6 +310,13 @@ exports.createUser = async (req, res) => {
         : buildEmptyPermissionsMap(), // Admin permissions computed on-the-fly
     phone,
   });
+
+  await notify(['users'], {
+    type: 'user-created',
+    title: 'New user added',
+    message: `${newUser.fullName} (${newUser.role}${newUser.department ? `, ${newUser.department}` : ''}) was added by ${req.user.fullName}.`,
+    link: '/admin/users',
+  }, { exclude: req.user._id });
 
   createdResponse(res, { user: buildAuthPayload(newUser) }, 'User created successfully');
 };
@@ -376,6 +412,14 @@ exports.updateUserPermissions = async (req, res) => {
   const before = user.effectivePermissions();
   user.permissions = sanitizePermissions(permissions);
   await user.save();
+
+  // The affected employee is told directly — their access just changed.
+  await notify([], {
+    type: 'permissions-changed',
+    title: 'Your access was updated',
+    message: `${req.user.fullName} changed your module permissions. Some pages may now appear or disappear.`,
+    link: '/dashboard',
+  }, { onlyUsers: [user._id], exclude: req.user._id });
 
   successResponse(
     res,

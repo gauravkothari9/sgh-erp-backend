@@ -4,6 +4,7 @@ const {
   login,
   logout,
   getMe,
+  updateMe,
   updatePassword,
   getModules,
   createUser,
@@ -27,6 +28,7 @@ router.post('/bootstrap-admin', bootstrapAdmin);
 // Protected (any authenticated user)
 router.use(protect);
 router.get('/me', getMe);
+router.put('/me', updateMe);
 router.post('/logout', logout);
 router.put('/update-password', updatePassword);
 router.get('/modules', getModules);

@@ -19,6 +19,15 @@ const {
   setPrimaryImage,
   uploadMedia,
   renameMediaToSku,
+  getProductionConfig,
+  getProductionBoard,
+  getContainerProgress,
+  getContainerFile,
+  completeOrder,
+  setItemProduction,
+  setOrderFlags,
+  setFileFlags,
+  advanceItemStage,
 } = require('../controllers/orderController');
 const { protect, requirePermission } = require('../middleware/auth');
 const { uploadDocument, uploadImage } = require('../middleware/upload');
@@ -31,6 +40,19 @@ router.get('/stats/dashboard', requirePermission('orders', 'read'), getDashboard
 
 // Export (folded into read access)
 router.get('/export', requirePermission('orders', 'read'), exportOrders);
+
+// ─── Factory production tracking ─────────────────────────────────────────────
+// Placed before the '/:id' routes; multi-segment paths won't collide with the
+// single-segment '/:id' matcher, but keeping them here is clearest.
+router.get('/production/config', requirePermission('production', 'read'), getProductionConfig);
+router.get('/production/board', requirePermission('production', 'read'), getProductionBoard);
+router.get('/container/progress', requirePermission('container', 'read'), getContainerProgress);
+router.get('/container/file/:fileNumber', requirePermission('container', 'read'), getContainerFile);
+router.patch('/:id/complete', requirePermission('orders', 'update'), completeOrder);
+router.patch('/file/:fileNumber/flags', requirePermission('production', 'update'), setFileFlags);
+router.patch('/:id/flags', requirePermission('production', 'update'), setOrderFlags);
+router.patch('/:id/items/:itemId/production', requirePermission('production', 'update'), setItemProduction);
+router.patch('/:id/items/:itemId/stage', requirePermission('production', 'update'), advanceItemStage);
 
 // Standard CRUD
 router.route('/')

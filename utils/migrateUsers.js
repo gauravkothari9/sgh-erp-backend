@@ -11,7 +11,11 @@
  *
  * Run with:  node backend/utils/migrateUsers.js
  */
-require('dotenv').config({ path: '../.env' });
+// Load the same env file server.js loads, so this migration writes to whatever
+// database NODE_ENV chose (sgh_erp in prod, sgh_erp_dev with NODE_ENV=development).
+const path = require('path');
+const envSuffix = process.env.NODE_ENV === 'development' ? '.development' : '';
+require('dotenv').config({ path: path.join(__dirname, '..', `.env${envSuffix}`) });
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const generateUserId = require('./generateUserId');
@@ -19,7 +23,8 @@ const { MODULE_KEYS } = require('../config/modules');
 
 const migrate = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/sgh-erp');
+    const uri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/sgh_erp';
+    await mongoose.connect(uri);
     console.log('✅ Connected to MongoDB');
 
     // 1) Rename `name` → `fullName` on all users that still have the old field.

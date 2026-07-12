@@ -17,6 +17,12 @@ const v1AuthRoutes = require('./routes/authRoutes');
 const v1CustomerRoutes = require('./routes/customerRoutes');
 const v1OrderRoutes = require('./routes/orderRoutes');
 const v1BuyerCatalogueRoutes = require('./routes/buyerCatalogueRoutes');
+const v1NotificationRoutes = require('./routes/notificationRoutes');
+const v1ShowroomRoutes = require('./routes/showroomRoutes');
+const v1LocalRoutes = require('./routes/localRoutes');
+const v1DashboardRoutes = require('./routes/dashboardRoutes');
+const v1SettingsRoutes = require('./routes/settingsRoutes');
+const { initRealtime } = require('./utils/realtime');
 
 const app = express();
 
@@ -72,6 +78,11 @@ app.use('/api/v1/auth', v1AuthRoutes);
 app.use('/api/v1/customers', v1CustomerRoutes);
 app.use('/api/v1/orders', v1OrderRoutes);
 app.use('/api/v1/buyer-catalogue', v1BuyerCatalogueRoutes);
+app.use('/api/v1/notifications', v1NotificationRoutes);
+app.use('/api/v1/showroom', v1ShowroomRoutes);
+app.use('/api/v1/local', v1LocalRoutes);
+app.use('/api/v1/dashboard', v1DashboardRoutes);
+app.use('/api/v1/settings', v1SettingsRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
@@ -84,6 +95,8 @@ if (!process.env.VERCEL) {
       const server = app.listen(PORT, () => {
         console.log(`🚀 SGH ERP Server running on port ${PORT} [${process.env.NODE_ENV || 'production'}]`);
       });
+      // Realtime notifications — pushed to `user:<id>` rooms as they're created.
+      initRealtime(server, allowedOrigin);
       process.on('unhandledRejection', (err) => {
         console.error('⚠️  Unhandled Rejection:', err);
         if (process.env.NODE_ENV === 'production') server.close(() => process.exit(1));
